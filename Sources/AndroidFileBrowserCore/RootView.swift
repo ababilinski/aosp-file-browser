@@ -116,6 +116,9 @@ public struct RootView: View {
         .sheet(item: $model.pendingAppInstallRecovery) { request in
             AppInstallRecoverySheet(model: model, request: request)
         }
+        .sheet(item: $model.wirelessADBSetupPresentation) { presentation in
+            WirelessADBSetupSheet(model: model, deviceID: presentation.deviceID)
+        }
         .sheet(item: $model.adbQRPairingSession, onDismiss: {
             model.adbQRPairingSheetDidDismiss()
         }) { session in
@@ -922,6 +925,17 @@ private struct DeviceRow: View {
             model.selectADBDevice(id: device.id)
         }
         .help(device.subtitle)
+        .contextMenu {
+            if device.connectionKind == .usb, device.state == .device {
+                Button {
+                    model.requestWirelessADBSetup(for: device.id)
+                } label: {
+                    Label("Connect via Wi-Fi…", systemImage: "wifi")
+                }
+            } else if device.connectionKind == .wifi {
+                Label("Connected via Wi-Fi", systemImage: "wifi")
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(device.title), \(connectionDetail)")
     }
@@ -948,7 +962,7 @@ private struct DeviceRow: View {
                 .help("Connected over Wi-Fi. You can unplug the cable.")
         case .failed(let message):
             Button {
-                model.startWirelessADBSetup(for: device.id)
+                model.requestWirelessADBSetup(for: device.id)
             } label: {
                 Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
             }
@@ -958,7 +972,7 @@ private struct DeviceRow: View {
             .accessibilityLabel("Retry Wi-Fi setup")
         case nil where device.connectionKind == .usb && device.state == .device:
             Button {
-                model.startWirelessADBSetup(for: device.id)
+                model.requestWirelessADBSetup(for: device.id)
             } label: {
                 Image(systemName: device.connectionKind.symbol)
             }

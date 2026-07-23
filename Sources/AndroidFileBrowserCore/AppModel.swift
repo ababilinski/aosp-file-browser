@@ -246,6 +246,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var isPrefetchingStorageCategories = false
     @Published public private(set) var batteryStatuses: [AndroidDevice.ID: BatteryStatus] = [:]
     @Published public private(set) var wirelessADBSetupStates: [AndroidDevice.ID: ADBWirelessSetupState] = [:]
+    @Published public var wirelessADBSetupPresentation: ADBWirelessSetupPresentation?
     @Published public var pendingRename: AndroidFile?
     @Published public var inlineRenameFileID: AndroidFile.ID?
     @Published var pendingBatchRenameRequest: BatchRenameRequest?
@@ -340,6 +341,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var loadingTreePaths = Set<String>()
     private var adbDiscovery: ADBDiscovery?
     private var adbQRPairingTask: Task<Void, Never>?
+    private var wirelessADBPreflightTask: Task<Void, Never>?
     private var wirelessADBSetupTasks: [AndroidDevice.ID: Task<Void, Never>] = [:]
     private var adbQRPairedHost: String?
     private var pendingToolSetupAfterQR: (tool: ToolchainTool, issue: String?)?
@@ -1412,7 +1414,66 @@ public final class AppModel: ObservableObject {
         loadSelectedADBDeviceInBackground()
     }
 
-    public func startWirelessADBSetup(for deviceID: AndroidDevice.ID) {
+    public func requestWirelessADBSetup(for deviceID: AndroidDevice.ID) {
+        guard let device = devices.first(where: { $0.id == deviceID }),
+              device.state == .device,
+              device.connectionKind == .usb else {
+            statusMessage = "Connect and authorize this device over USB first."
+            return
+        }
+
+        wirelessADBPreflightTask?.cancel()
+        wirelessADBSetupPresentation = ADBWirelessSetupPresentation(
+            deviceID: device.id,
+            deviceName: device.title,
+            phase: .checking
+        )
+        wirelessADBPreflightTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.wirelessADBPreflightTask = nil }
+            do {
+                let status = try await self.deviceManager.wirelessDebuggingStatus(device: device)
+                guard self.wirelessADBSetupPresentation?.deviceID == device.id else { return }
+                switch status {
+                case .enabled:
+                    self.wirelessADBSetupPresentation?.phase = .readyToConnect(
+                        verificationUnavailable: false
+                    )
+                case .disabled:
+                    self.wirelessADBSetupPresentation?.phase = .needsWirelessDebugging
+                case .unavailable:
+                    self.wirelessADBSetupPresentation?.phase = .readyToConnect(
+                        verificationUnavailable: true
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.wirelessADBSetupPresentation?.deviceID == device.id else { return }
+                self.wirelessADBSetupPresentation?.phase = .readyToConnect(
+                    verificationUnavailable: true
+                )
+            }
+        }
+    }
+
+    public func retryWirelessADBPreflight() {
+        guard let deviceID = wirelessADBSetupPresentation?.deviceID else { return }
+        requestWirelessADBSetup(for: deviceID)
+    }
+
+    public func confirmWirelessADBSetup() {
+        guard let deviceID = wirelessADBSetupPresentation?.deviceID else { return }
+        startWirelessADBSetup(for: deviceID)
+    }
+
+    public func dismissWirelessADBSetup() {
+        wirelessADBPreflightTask?.cancel()
+        wirelessADBPreflightTask = nil
+        wirelessADBSetupPresentation = nil
+    }
+
+    private func startWirelessADBSetup(for deviceID: AndroidDevice.ID) {
         guard let device = devices.first(where: { $0.id == deviceID }) else { return }
         guard device.state == .device, device.connectionKind == .usb else {
             statusMessage = "Connect and authorize this device over USB first."
@@ -1421,6 +1482,7 @@ public final class AppModel: ObservableObject {
         guard wirelessADBSetupTasks[deviceID] == nil else { return }
 
         wirelessADBSetupStates[deviceID] = .preparing
+        wirelessADBSetupPresentation?.phase = .connecting
         statusMessage = "Preparing \(device.title) for Wi-Fi…"
         wirelessADBSetupTasks[deviceID] = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1434,17 +1496,19 @@ public final class AppModel: ObservableObject {
                 if found.contains(where: { $0.id == endpoint && $0.state == .device }) {
                     self.selectADBDevice(id: endpoint)
                 }
+                if self.wirelessADBSetupPresentation?.deviceID == device.id {
+                    self.wirelessADBSetupPresentation?.phase = .connected(endpoint: endpoint)
+                }
                 self.statusMessage = "\(device.title) is connected over Wi-Fi. You can unplug the cable."
             } catch is CancellationError {
                 return
             } catch {
                 let message = error.localizedDescription
                 self.wirelessADBSetupStates[deviceID] = .failed(message: message)
+                if self.wirelessADBSetupPresentation?.deviceID == device.id {
+                    self.wirelessADBSetupPresentation?.phase = .failed(message: message)
+                }
                 self.statusMessage = "Couldn’t enable Wi-Fi for \(device.title)."
-                self.alert = UserAlert(
-                    title: "Couldn’t Enable ADB over Wi-Fi",
-                    message: message
-                )
             }
         }
     }
@@ -7504,6 +7568,8 @@ public final class AppModel: ObservableObject {
             task.cancel()
         }
         wirelessADBSetupTasks.removeAll()
+        wirelessADBPreflightTask?.cancel()
+        wirelessADBPreflightTask = nil
         searchTask?.cancel()
         searchTask = nil
         cacheMaintenanceTask?.cancel()

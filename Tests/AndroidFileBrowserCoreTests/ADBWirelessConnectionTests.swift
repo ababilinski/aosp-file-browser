@@ -43,6 +43,42 @@ final class ADBWirelessConnectionTests: XCTestCase {
         }
     }
 
+    func testWirelessDebuggingPreflightReportsEnabledAndDisabled() async throws {
+        let enabledRunner = WirelessADBProcessRunner(wirelessSettingOutput: "1\n")
+        let disabledRunner = WirelessADBProcessRunner(wirelessSettingOutput: "0\n")
+        let device = AndroidDevice(
+            serial: "USB123",
+            state: .device,
+            model: "Pixel",
+            product: nil,
+            transport: "1"
+        )
+
+        let enabled = try await DeviceManager(adb: makeADB(runner: enabledRunner))
+            .wirelessDebuggingStatus(device: device)
+        let disabled = try await DeviceManager(adb: makeADB(runner: disabledRunner))
+            .wirelessDebuggingStatus(device: device)
+
+        XCTAssertEqual(enabled, .enabled)
+        XCTAssertEqual(disabled, .disabled)
+    }
+
+    func testWirelessDebuggingPreflightFallsBackWhenSettingIsUnavailable() async throws {
+        let runner = WirelessADBProcessRunner(wirelessSettingOutput: "null\n")
+        let manager = DeviceManager(adb: makeADB(runner: runner))
+        let device = AndroidDevice(
+            serial: "USB123",
+            state: .device,
+            model: "Pixel",
+            product: nil,
+            transport: "1"
+        )
+
+        let status = try await manager.wirelessDebuggingStatus(device: device)
+
+        XCTAssertEqual(status, .unavailable)
+    }
+
     private func makeADB(runner: WirelessADBProcessRunner) -> ADBClient {
         ADBClient(
             locator: ToolchainLocator(adbOverride: URL(fileURLWithPath: "/tmp/test-adb")),
@@ -53,16 +89,24 @@ final class ADBWirelessConnectionTests: XCTestCase {
 
 private actor WirelessADBProcessRunner: ProcessRunning {
     private let routeOutput: String
+    private let wirelessSettingOutput: String
     private var recordedCommands: [[String]] = []
 
-    init(routeOutput: String = "1.1.1.1 via 192.168.1.1 dev wlan0 src 192.168.1.42 uid 2000\n") {
+    init(
+        routeOutput: String = "1.1.1.1 via 192.168.1.1 dev wlan0 src 192.168.1.42 uid 2000\n",
+        wirelessSettingOutput: String = "1\n"
+    ) {
         self.routeOutput = routeOutput
+        self.wirelessSettingOutput = wirelessSettingOutput
     }
 
     func run(executable: URL, arguments: [String]) async throws -> ADBCommandResult {
         recordedCommands.append(arguments)
         if arguments.count == 4,
            Array(arguments.prefix(3)) == ["-s", "USB123", "shell"] {
+            if arguments[3].contains("adb_wifi_enabled") {
+                return result(wirelessSettingOutput)
+            }
             return result(routeOutput)
         }
         switch arguments {

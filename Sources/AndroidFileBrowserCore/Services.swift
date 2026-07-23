@@ -27,6 +27,27 @@ public actor DeviceManager {
         _ = try await adb.run(["pair", host, code], timeout: 45)
     }
 
+    public func wirelessDebuggingStatus(device: AndroidDevice) async throws -> ADBWirelessDebuggingStatus {
+        guard device.state == .device else {
+            throw ADBWirelessConnectionError.deviceNotReady
+        }
+        let result = try await adb.shell(
+            serial: device.serial,
+            "settings get global adb_wifi_enabled 2>/dev/null",
+            allowFailure: true,
+            timeout: 8
+        )
+        guard result.exitCode == 0 else { return .unavailable }
+        switch result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "1", "true":
+            return .enabled
+        case "0", "false":
+            return .disabled
+        default:
+            return .unavailable
+        }
+    }
+
     public func enableWirelessADB(device: AndroidDevice, port: Int = 5555) async throws -> String {
         guard device.state == .device else {
             throw ADBWirelessConnectionError.deviceNotReady

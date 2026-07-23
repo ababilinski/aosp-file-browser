@@ -127,6 +127,28 @@ final class AppModelDeviceSessionTests: XCTestCase {
         XCTAssertEqual(model.batteryStatuses["second-device"]?.levelPercent, 84)
     }
 
+    func testWirelessSetupRequestShowsEnablementGuidanceWhenSettingIsOff() async throws {
+        let runner = SlowAppLoadingProcessRunner()
+        let model = makeModel(runner: runner)
+        let device = AndroidDevice(
+            serial: "first-device",
+            state: .device,
+            model: "First",
+            product: nil,
+            transport: "1",
+            usbLocation: "1-2"
+        )
+        model.devices = [device]
+        model.selectedDeviceID = device.id
+
+        model.requestWirelessADBSetup(for: device.id)
+
+        try await waitUntil(timeout: .seconds(2)) {
+            model.wirelessADBSetupPresentation?.phase == .needsWirelessDebugging
+        }
+        XCTAssertEqual(model.wirelessADBSetupPresentation?.deviceName, "First")
+    }
+
     private func makeModel(runner: SlowAppLoadingProcessRunner) -> AppModel {
         let suiteName = "AndroidFileBrowserCoreTests.AppModelDeviceSession.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -210,6 +232,9 @@ private actor SlowAppLoadingProcessRunner: ProcessRunning {
                   scale: 100
                 """
             )
+        }
+        if command.contains("settings get global adb_wifi_enabled") {
+            return result("0\n")
         }
         if serial == "first-device", command.hasPrefix("stat -c %s ") {
             slowDetailsStarted = true

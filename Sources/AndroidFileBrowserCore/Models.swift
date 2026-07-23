@@ -94,9 +94,38 @@ public enum ADBWirelessSetupState: Equatable, Sendable {
             "Preparing Wi-Fi…"
         case .ready:
             "Wi-Fi ready · Unplug cable"
-        case .failed(let message):
-            message
+        case .failed:
+            "Wi-Fi setup failed"
         }
+    }
+}
+
+public enum ADBWirelessDebuggingStatus: Equatable, Sendable {
+    case enabled
+    case disabled
+    case unavailable
+}
+
+public struct ADBWirelessSetupPresentation: Identifiable, Equatable, Sendable {
+    public enum Phase: Equatable, Sendable {
+        case checking
+        case readyToConnect(verificationUnavailable: Bool)
+        case needsWirelessDebugging
+        case connecting
+        case connected(endpoint: String)
+        case failed(message: String)
+    }
+
+    public let deviceID: AndroidDevice.ID
+    public let deviceName: String
+    public var phase: Phase
+
+    public var id: AndroidDevice.ID { deviceID }
+
+    public init(deviceID: AndroidDevice.ID, deviceName: String, phase: Phase) {
+        self.deviceID = deviceID
+        self.deviceName = deviceName
+        self.phase = phase
     }
 }
 
