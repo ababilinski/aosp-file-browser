@@ -26,6 +26,88 @@ public actor DeviceManager {
     public func pair(host: String, code: String) async throws {
         _ = try await adb.run(["pair", host, code], timeout: 45)
     }
+
+    public func enableWirelessADB(device: AndroidDevice, port: Int = 5555) async throws -> String {
+        guard device.state == .device else {
+            throw ADBWirelessConnectionError.deviceNotReady
+        }
+        guard device.connectionKind == .usb else {
+            throw ADBWirelessConnectionError.requiresUSB
+        }
+
+        let network = try await adb.shell(
+            serial: device.serial,
+            "ip route get 1.1.1.1 2>/dev/null || ip -o -4 addr show wlan0 2>/dev/null",
+            allowFailure: true,
+            timeout: 8
+        )
+        guard let address = ADBParsers.parseWirelessIPv4Address(network.stdout) else {
+            throw ADBWirelessConnectionError.noWiFiAddress
+        }
+
+        let endpoint = "\(address):\(port)"
+        let tcpIP = try await adb.run(
+            ["-s", device.serial, "tcpip", String(port)],
+            allowFailure: true,
+            timeout: 20
+        )
+        guard tcpIP.exitCode == 0,
+              (tcpIP.stdout + tcpIP.stderr).localizedCaseInsensitiveContains("restarting in TCP mode") else {
+            throw ADBWirelessConnectionError.tcpIPFailed(commandMessage(tcpIP))
+        }
+
+        var lastConnectionMessage = ""
+        for attempt in 0..<4 {
+            if attempt > 0 {
+                try await Task.sleep(for: .milliseconds(400))
+            }
+            let connection = try await adb.run(["connect", endpoint], allowFailure: true, timeout: 12)
+            lastConnectionMessage = commandMessage(connection)
+            let normalized = lastConnectionMessage.lowercased()
+            if connection.exitCode == 0,
+               normalized.contains("connected to") || normalized.contains("already connected") {
+                if try await devices().contains(where: { $0.serial == endpoint && $0.state == .device }) {
+                    return endpoint
+                }
+            }
+        }
+
+        throw ADBWirelessConnectionError.connectionFailed(
+            endpoint: endpoint,
+            message: lastConnectionMessage
+        )
+    }
+
+    private func commandMessage(_ result: ADBCommandResult) -> String {
+        let combined = [result.stdout, result.stderr]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return combined.isEmpty ? "ADB did not provide additional details." : combined
+    }
+}
+
+public enum ADBWirelessConnectionError: LocalizedError, Equatable, Sendable {
+    case requiresUSB
+    case deviceNotReady
+    case noWiFiAddress
+    case tcpIPFailed(String)
+    case connectionFailed(endpoint: String, message: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .requiresUSB:
+            "Connect this device with a USB cable before switching it to Wi-Fi."
+        case .deviceNotReady:
+            "Authorize Developer Options on the Android device, then try again."
+        case .noWiFiAddress:
+            "The device does not have a usable Wi-Fi address. Connect the Mac and Android device to the same Wi-Fi network, then try again."
+        case .tcpIPFailed(let message):
+            "ADB could not enable network debugging. \(message)"
+        case .connectionFailed(let endpoint, let message):
+            "ADB enabled network debugging but could not connect to \(endpoint). Keep the cable connected, confirm both devices are on the same Wi-Fi network, and try again. \(message)"
+        }
+    }
 }
 
 public actor MediaStoreScanner {

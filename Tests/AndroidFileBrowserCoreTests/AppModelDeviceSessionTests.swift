@@ -114,6 +114,19 @@ final class AppModelDeviceSessionTests: XCTestCase {
         await installTask.value
     }
 
+    func testPollingRefreshesBatteryForEveryConnectedADBDevice() async throws {
+        let runner = SlowAppLoadingProcessRunner()
+        let model = makeModel(runner: runner)
+
+        await model.pollDeviceConnections()
+
+        try await waitUntil(timeout: .seconds(2)) {
+            model.batteryStatuses.count == 2
+        }
+        XCTAssertEqual(model.batteryStatuses["first-device"]?.levelPercent, 61)
+        XCTAssertEqual(model.batteryStatuses["second-device"]?.levelPercent, 84)
+    }
+
     private func makeModel(runner: SlowAppLoadingProcessRunner) -> AppModel {
         let suiteName = "AndroidFileBrowserCoreTests.AppModelDeviceSession.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -182,6 +195,21 @@ private actor SlowAppLoadingProcessRunner: ProcessRunning {
             try await Task.sleep(for: .milliseconds(250))
             let icon = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
             return result("com.example.reader\tReader Plus\t\(icon)\n")
+        }
+        if command == "dumpsys battery" {
+            let level = serial == "first-device" ? 61 : 84
+            return result(
+                """
+                Current Battery Service state:
+                  AC powered: false
+                  USB powered: false
+                  Wireless powered: false
+                  status: 3
+                  present: true
+                  level: \(level)
+                  scale: 100
+                """
+            )
         }
         if serial == "first-device", command.hasPrefix("stat -c %s ") {
             slowDetailsStarted = true

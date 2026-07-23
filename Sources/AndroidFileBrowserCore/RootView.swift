@@ -401,66 +401,38 @@ private struct SidebarView: View {
     var body: some View {
         List(selection: sidebarSelectionBinding) {
             Section("Devices") {
+                ConnectionModeMenu(model: model)
+
                 if showsUSBTransferDevices {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ConnectionModeMenu(model: model)
-
-                        Picker("Phone", selection: Binding(
-                            get: { usbTransferManager.selectedDeviceID },
-                            set: { usbTransferManager.selectDevice(id: $0) }
-                        )) {
-                            ForEach(usbTransferManager.devices) { device in
-                                Text(device.name).tag(Optional(device.id))
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity)
-                    }
-
                     ForEach(usbTransferManager.devices) { device in
-                        USBTransferDeviceRow(device: device)
+                        USBTransferDeviceRow(
+                            device: device,
+                            isSelected: usbTransferManager.selectedDeviceID == device.id,
+                            onSelect: { usbTransferManager.selectDevice(id: device.id) }
+                        )
                     }
                 } else if isUSBTransferStatusMode {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ConnectionModeMenu(model: model)
-
-                        Text(usbTransferStatus)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
+                    Label(usbTransferStatus, systemImage: "iphone.slash")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } else if model.devices.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ConnectionModeMenu(model: model)
-
-                        Label(disconnectedSidebarTitle, systemImage: "iphone.slash")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Label(disconnectedSidebarTitle, systemImage: "iphone.slash")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ConnectionModeMenu(model: model)
-
-                        Picker("Device", selection: Binding(
-                            get: { model.selectedDeviceID },
-                            set: { model.selectADBDevice(id: $0) }
-                        )) {
-                            if model.selectedDeviceID == nil {
-                                Text("No connected device").tag(Optional<String>.none)
-                            }
-                            ForEach(model.devices) { device in
-                                Text(device.title).tag(Optional(device.id))
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity)
-                        .disabled(!model.canSwitchADBDevice)
-                    }
-
                     ForEach(model.devices) { device in
-                        DeviceRow(device: device, batteryStatus: model.batteryStatuses[device.id])
+                        DeviceRow(
+                            model: model,
+                            device: device,
+                            batteryStatus: model.batteryStatuses[device.id],
+                            wirelessSetupState: model.wirelessADBSetupStates[device.id],
+                            isSelected: model.selectedDeviceID == device.id
+                        )
                     }
                 }
+
+                Divider()
+                    .padding(.vertical, 2)
             }
 
             if showsStorageUsage {
@@ -905,20 +877,26 @@ private struct MTPQuickAccessRow: View {
 }
 
 private struct DeviceRow: View {
+    @ObservedObject var model: AppModel
     let device: AndroidDevice
     let batteryStatus: BatteryStatus?
+    let wirelessSetupState: ADBWirelessSetupState?
+    let isSelected: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: device.state == .device ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(device.state == .device ? adaptiveSuccessColor : adaptiveWarningColor)
+        HStack(spacing: 8) {
+            Image(systemName: "iphone")
+                .frame(width: 18)
+                .foregroundStyle(device.state == .device ? .primary : adaptiveWarningColor)
             VStack(alignment: .leading, spacing: 2) {
                 Text(device.title)
                     .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
                 HStack(spacing: 4) {
-                    Text(device.state.displayName)
-                    if let batteryStatus {
+                    Text(connectionDetail)
+                        .lineLimit(1)
+                    if let batteryStatus, wirelessSetupState == nil {
                         Text("·")
                             .foregroundStyle(.tertiary)
                         BatteryStatusBadge(status: batteryStatus)
@@ -927,8 +905,73 @@ private struct DeviceRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+            Spacer(minLength: 4)
+            connectionAccessory
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.accentColor.opacity(colorScheme == .dark ? 0.22 : 0.14))
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard model.canSwitchADBDevice else { return }
+            model.selectADBDevice(id: device.id)
         }
         .help(device.subtitle)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(device.title), \(connectionDetail)")
+    }
+
+    private var connectionDetail: String {
+        if let wirelessSetupState {
+            return wirelessSetupState.detail
+        }
+        return "\(device.connectionKind.label) · \(device.state.displayName)"
+    }
+
+    @ViewBuilder
+    private var connectionAccessory: some View {
+        switch wirelessSetupState {
+        case .preparing:
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 24, height: 24)
+                .help("Preparing ADB over Wi-Fi")
+        case .ready:
+            Image(systemName: "wifi")
+                .foregroundStyle(adaptiveSuccessColor)
+                .frame(width: 24, height: 24)
+                .help("Connected over Wi-Fi. You can unplug the cable.")
+        case .failed(let message):
+            Button {
+                model.startWirelessADBSetup(for: device.id)
+            } label: {
+                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(adaptiveWarningColor)
+            .help("Wi-Fi setup failed: \(message) Select to try again.")
+            .accessibilityLabel("Retry Wi-Fi setup")
+        case nil where device.connectionKind == .usb && device.state == .device:
+            Button {
+                model.startWirelessADBSetup(for: device.id)
+            } label: {
+                Image(systemName: device.connectionKind.symbol)
+            }
+            .buttonStyle(.borderless)
+            .frame(width: 24, height: 24)
+            .help("Switch this USB debugging connection to Wi-Fi")
+            .accessibilityLabel("Switch \(device.title) to ADB over Wi-Fi")
+        case nil:
+            Image(systemName: device.connectionKind.symbol)
+                .foregroundStyle(device.state == .device ? Color.secondary : adaptiveWarningColor)
+                .frame(width: 24, height: 24)
+                .help("\(device.connectionKind.label) connection")
+        }
     }
 
     private var adaptiveSuccessColor: Color {
@@ -953,8 +996,6 @@ private struct BatteryStatusBadge: View {
             }
             Text("\(status.levelPercent)%")
                 .monospacedDigit()
-            Text(status.statusLabel)
-                .fontWeight(status.isCharging ? .semibold : .regular)
         }
         .foregroundStyle(statusColor)
         .help("\(status.statusLabel), \(status.levelPercent)%")
@@ -973,27 +1014,43 @@ private struct BatteryStatusBadge: View {
 
 private struct USBTransferDeviceRow: View {
     let device: USBTransferDevice
+    let isSelected: Bool
+    let onSelect: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: device.isReady ? "checkmark.circle.fill" : "clock")
-                .foregroundStyle(device.isReady ? adaptiveSuccessColor : .secondary)
+        HStack(spacing: 8) {
+            Image(systemName: "iphone")
+                .frame(width: 18)
+                .foregroundStyle(device.isReady ? .primary : .secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(device.name)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
-                Text(device.statusLabel)
+                Text("USB · \(device.statusLabel)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Spacer(minLength: 4)
+            Image(systemName: "cable.connector")
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 24)
         }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.accentColor.opacity(colorScheme == .dark ? 0.22 : 0.14))
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
         .help(device.subtitle)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    private var adaptiveSuccessColor: Color {
-        colorScheme == .light ? Color(red: 0.0, green: 0.45, blue: 0.20) : .green
-    }
 }
 
 private struct StorageRow: View {

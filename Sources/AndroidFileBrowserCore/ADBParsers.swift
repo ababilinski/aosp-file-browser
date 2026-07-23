@@ -67,9 +67,38 @@ public enum ADBParsers {
                     state: DeviceState(rawValue: fields[1]) ?? .unknown,
                     model: attributes["model"],
                     product: attributes["product"],
-                    transport: attributes["transport_id"]
+                    transport: attributes["transport_id"],
+                    usbLocation: attributes["usb"]
                 )
             }
+    }
+
+    public static func parseWirelessIPv4Address(_ output: String) -> String? {
+        let tokens = output.split(whereSeparator: \.isWhitespace).map(String.init)
+        if let sourceIndex = tokens.firstIndex(of: "src"),
+           tokens.indices.contains(sourceIndex + 1),
+           isUsableIPv4Address(tokens[sourceIndex + 1]) {
+            return tokens[sourceIndex + 1]
+        }
+
+        if let inetIndex = tokens.firstIndex(of: "inet"),
+           tokens.indices.contains(inetIndex + 1) {
+            let candidate = tokens[inetIndex + 1].split(separator: "/", maxSplits: 1).first.map(String.init) ?? ""
+            if isUsableIPv4Address(candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private static func isUsableIPv4Address(_ candidate: String) -> Bool {
+        let octets = candidate.split(separator: ".", omittingEmptySubsequences: false)
+        guard octets.count == 4,
+              octets.allSatisfy({ octet in
+                  guard let value = Int(octet) else { return false }
+                  return (0...255).contains(value)
+              }) else { return false }
+        return octets[0] != "0" && octets[0] != "127"
     }
 
     public static func parseLongListing(_ output: String, parentPath: String) -> [AndroidFile] {

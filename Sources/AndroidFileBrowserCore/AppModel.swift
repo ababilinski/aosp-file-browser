@@ -245,6 +245,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var prefetchingStorageCategoryIDs = Set<StorageCategoryFileList.ID>()
     @Published public private(set) var isPrefetchingStorageCategories = false
     @Published public private(set) var batteryStatuses: [AndroidDevice.ID: BatteryStatus] = [:]
+    @Published public private(set) var wirelessADBSetupStates: [AndroidDevice.ID: ADBWirelessSetupState] = [:]
     @Published public var pendingRename: AndroidFile?
     @Published public var inlineRenameFileID: AndroidFile.ID?
     @Published var pendingBatchRenameRequest: BatchRenameRequest?
@@ -339,6 +340,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var loadingTreePaths = Set<String>()
     private var adbDiscovery: ADBDiscovery?
     private var adbQRPairingTask: Task<Void, Never>?
+    private var wirelessADBSetupTasks: [AndroidDevice.ID: Task<Void, Never>] = [:]
     private var adbQRPairedHost: String?
     private var pendingToolSetupAfterQR: (tool: ToolchainTool, issue: String?)?
     private var suppressedToolSetup = Set<ToolchainTool>()
@@ -1410,6 +1412,43 @@ public final class AppModel: ObservableObject {
         loadSelectedADBDeviceInBackground()
     }
 
+    public func startWirelessADBSetup(for deviceID: AndroidDevice.ID) {
+        guard let device = devices.first(where: { $0.id == deviceID }) else { return }
+        guard device.state == .device, device.connectionKind == .usb else {
+            statusMessage = "Connect and authorize this device over USB first."
+            return
+        }
+        guard wirelessADBSetupTasks[deviceID] == nil else { return }
+
+        wirelessADBSetupStates[deviceID] = .preparing
+        statusMessage = "Preparing \(device.title) for Wi-Fi…"
+        wirelessADBSetupTasks[deviceID] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.wirelessADBSetupTasks[deviceID] = nil }
+
+            do {
+                let endpoint = try await self.deviceManager.enableWirelessADB(device: device)
+                self.wirelessADBSetupStates[deviceID] = .ready(endpoint: endpoint)
+                let found = try await self.deviceManager.devices()
+                _ = self.applyADBDeviceSnapshot(found)
+                if found.contains(where: { $0.id == endpoint && $0.state == .device }) {
+                    self.selectADBDevice(id: endpoint)
+                }
+                self.statusMessage = "\(device.title) is connected over Wi-Fi. You can unplug the cable."
+            } catch is CancellationError {
+                return
+            } catch {
+                let message = error.localizedDescription
+                self.wirelessADBSetupStates[deviceID] = .failed(message: message)
+                self.statusMessage = "Couldn’t enable Wi-Fi for \(device.title)."
+                self.alert = UserAlert(
+                    title: "Couldn’t Enable ADB over Wi-Fi",
+                    message: message
+                )
+            }
+        }
+    }
+
     private func loadSelectedADBDeviceInBackground() {
         guard let deviceID = selectedDeviceID,
               selectedDevice?.state == .device else { return }
@@ -1466,7 +1505,7 @@ public final class AppModel: ObservableObject {
                     prepareADBReadySurfaceForTransition()
                 }
                 try await refreshStorage()
-                await refreshBatteryStatus()
+                await refreshConnectedADBBatteryStatuses()
                 if connectionMode == .adb {
                     try await refreshCurrentSurface()
                 }
@@ -1511,11 +1550,9 @@ public final class AppModel: ObservableObject {
                     prepareADBReadySurfaceForTransition()
                 }
                 loadSelectedADBDeviceInBackground()
-            } else if !wasBusy, selectedDevice?.state == .device {
-                await refreshBatteryStatus()
             }
             if !wasBusy {
-                await refreshPhoneControlBatteryStatuses()
+                await refreshConnectedADBBatteryStatuses()
             }
 
             if !wasBusy || selectedDeviceChanged || found.isEmpty {
@@ -7306,9 +7343,8 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    private func refreshPhoneControlBatteryStatuses() async {
-        let activeSerials = Set(phoneControlSessions.map(\.deviceSerial))
-        for device in devices where activeSerials.contains(device.serial) && device.id != selectedDevice?.id {
+    private func refreshConnectedADBBatteryStatuses() async {
+        for device in devices where device.state == .device {
             await refreshBatteryStatus(for: device)
         }
     }
@@ -7320,6 +7356,15 @@ public final class AppModel: ObservableObject {
         devices = found
         let foundDeviceIDs = Set(found.map(\.id))
         batteryStatuses = batteryStatuses.filter { foundDeviceIDs.contains($0.key) }
+        wirelessADBSetupStates = wirelessADBSetupStates.filter { deviceID, state in
+            if foundDeviceIDs.contains(deviceID) || wirelessADBSetupTasks[deviceID] != nil {
+                return true
+            }
+            if case .ready(let endpoint) = state {
+                return foundDeviceIDs.contains(endpoint)
+            }
+            return false
+        }
 
         let selectedDeviceIsReady = found.first { $0.id == selectedDeviceID }?.state == .device
         if selectedDeviceID == nil
@@ -7455,6 +7500,10 @@ public final class AppModel: ObservableObject {
         for task in cancellableReadTasks.values {
             task.cancel()
         }
+        for task in wirelessADBSetupTasks.values {
+            task.cancel()
+        }
+        wirelessADBSetupTasks.removeAll()
         searchTask?.cancel()
         searchTask = nil
         cacheMaintenanceTask?.cancel()
