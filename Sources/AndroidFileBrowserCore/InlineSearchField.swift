@@ -4,11 +4,12 @@ struct InlineSearchField: View {
     @Binding var text: String
     let prompt: String
     private let kindFilter: Binding<FileSearchKindFilter>?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isExpanded: Bool
+    @State private var expansionProgress: CGFloat = 1
     @State private var isSuggestionPopoverPresented = false
     @State private var suppressSuggestions = false
     @FocusState private var isFocused: Bool
-    @Namespace private var searchTransition
 
     init(text: Binding<String>, prompt: String) {
         self._text = text
@@ -30,14 +31,17 @@ struct InlineSearchField: View {
         ZStack(alignment: .trailing) {
             if isExpanded {
                 searchControl
-                    .transition(.opacity)
+                    .scaleEffect(
+                        x: reduceMotion ? 1 : expansionProgress,
+                        y: 1,
+                        anchor: .trailing
+                    )
+                    .opacity(reduceMotion ? 1 : expansionProgress)
             } else {
                 searchButton
-                    .transition(.opacity)
             }
         }
         .frame(width: isExpanded ? 300 : 36, alignment: .trailing)
-        .animation(.snappy(duration: 0.24), value: isExpanded)
         .popover(
             isPresented: $isSuggestionPopoverPresented,
             attachmentAnchor: .rect(.bounds),
@@ -60,7 +64,7 @@ struct InlineSearchField: View {
         }
         .onValueChange(of: activeKindFilter) { _, _ in
             if hasActiveSearch {
-                isExpanded = true
+                expandSearch()
             } else if !isFocused {
                 collapseSearch()
             }
@@ -69,15 +73,14 @@ struct InlineSearchField: View {
 
     private var searchButton: some View {
         Button {
-            withAnimation(.snappy(duration: 0.24)) {
-                isExpanded = true
-            }
+            expandSearch()
         } label: {
             Label {
                 Text("Search")
             } icon: {
                 Image(systemName: "magnifyingglass")
-                    .matchedGeometryEffect(id: "search-icon", in: searchTransition)
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(.primary)
             }
             .labelStyle(.iconOnly)
             .frame(width: 20, height: 20)
@@ -101,7 +104,6 @@ struct InlineSearchField: View {
         HStack(spacing: 7) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-                .matchedGeometryEffect(id: "search-icon", in: searchTransition)
 
             if let kindFilter, activeKindFilter != .any {
                 SearchKindToken(filter: kindFilter)
@@ -207,11 +209,32 @@ struct InlineSearchField: View {
         collapseSearch()
     }
 
+    private func expandSearch() {
+        guard !isExpanded else { return }
+
+        expansionProgress = reduceMotion ? 1 : 0.12
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isExpanded = true
+        }
+
+        guard !reduceMotion else { return }
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.13)) {
+                expansionProgress = 1
+            }
+        }
+    }
+
     private func collapseSearch() {
         guard !hasActiveSearch else { return }
         suppressSuggestions = true
         isSuggestionPopoverPresented = false
-        withAnimation(.snappy(duration: 0.24)) {
+        expansionProgress = 1
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
             isExpanded = false
         }
     }
