@@ -3038,15 +3038,6 @@ private struct AppToolbar: ToolbarContent {
                     .toolbarHoverHelp("Download: copy the selected File Transfer items to this Mac.")
                 }
 
-                Button {
-                    usbTransferManager.requestMTPNewFolder()
-                } label: {
-                    Label("New Folder", systemImage: "folder.badge.plus")
-                }
-                .disabled(!usbTransferManager.canWriteCurrentMTPFolder)
-                .accessibilityLabel("New Folder")
-                .toolbarHoverHelp("New Folder: create a folder in the current phone folder.")
-
                 if settings.showCompressToolbarButton {
                     Button {
                         usbTransferManager.requestMTPCompressSelected()
@@ -3115,15 +3106,6 @@ private struct AppToolbar: ToolbarContent {
                     .toolbarHoverHelp("Batch Rename: rename selected files with find and replace, numbering, prefixes, suffixes, or extension changes.")
                 }
 
-                Button {
-                    model.requestNewFolder()
-                } label: {
-                    Label("New Folder", systemImage: "folder.badge.plus")
-                }
-                .accessibilityLabel("New Folder")
-                .accessibilityHint("Create a new folder in the current Android folder.")
-                .toolbarHoverHelp("New Folder: create a folder in the current Android location.")
-
                 if settings.showCompressToolbarButton {
                     Button {
                         model.requestCompressSelected()
@@ -3173,34 +3155,52 @@ private struct AppToolbar: ToolbarContent {
                 .accessibilityHint("Show Developer Options and File Transfer status.")
                 .toolbarHoverHelp("Connection Status: check both connection methods and see setup help.")
             }
+        }
 
+        ToolbarItemGroup {
             if model.isActiveFileModeSelected {
-                HStack(spacing: 6) {
-                    Picker("Layout", selection: $model.browserLayout) {
-                        ForEach(BrowserLayout.allCases) { layout in
-                            Label(layout.label, systemImage: layout.symbol).tag(layout)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 112)
-                    .help("View Layout: switch between List and Icons.")
-                    .accessibilityLabel("File Layout")
-                    .accessibilityHint("Switch between list and icon file layouts.")
-
-                    if model.hasInspectableDeviceSurface {
-                        Button {
-                            model.showInspector.toggle()
-                        } label: {
-                            Label("Inspector", systemImage: "sidebar.right")
-                        }
-                        .accessibilityLabel(model.showInspector ? "Hide Inspector" : "Show Inspector")
-                        .accessibilityIdentifier("toolbar-inspector")
-                        .accessibilityHint("Show or hide the details panel on the right side of the window.")
-                        .toolbarHoverHelp(model.showInspector ? "Inspector: hide the details panel on the right." : "Inspector: show details for the selected file, preview, or app.")
+                Picker("Layout", selection: $model.browserLayout) {
+                    ForEach(BrowserLayout.allCases) { layout in
+                        Label(layout.label, systemImage: layout.symbol).tag(layout)
                     }
                 }
+                .pickerStyle(.segmented)
+                .frame(width: 112)
+                .help("View Layout: switch between List and Icons.")
+                .accessibilityLabel("File Layout")
+                .accessibilityHint("Switch between list and icon file layouts.")
             }
+        }
 
+        ToolbarItemGroup {
+            if model.hasInspectableDeviceSurface {
+                Button {
+                    model.requestActiveFileModeNewFolder()
+                } label: {
+                    Label("New Folder", systemImage: "folder.badge.plus")
+                }
+                .disabled(!model.canCreateFolderInActiveFileMode)
+                .accessibilityLabel("New Folder")
+                .accessibilityIdentifier("toolbar-new-folder")
+                .accessibilityHint("Create a folder in the current Android file location.")
+                .toolbarHoverHelp("New Folder: create a folder in the current Android file location.")
+
+                Button {
+                    model.showInspector.toggle()
+                } label: {
+                    Label(
+                        model.showInspector ? "Hide Inspector" : "Show Inspector",
+                        systemImage: "sidebar.right"
+                    )
+                }
+                .accessibilityLabel(model.showInspector ? "Hide Inspector" : "Show Inspector")
+                .accessibilityIdentifier("toolbar-inspector")
+                .accessibilityHint("Show or hide the details panel on the right side of the window.")
+                .toolbarHoverHelp(model.showInspector ? "Inspector: hide the details panel on the right." : "Inspector: show details for the selected file, preview, or app.")
+            }
+        }
+
+        ToolbarItemGroup {
             if model.showsPhoneCaptureToolbarControls {
                 Button {
                     model.requestScreenshot()
