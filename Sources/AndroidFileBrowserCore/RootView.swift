@@ -39,6 +39,7 @@ public struct RootView: View {
         .toolbar {
             AppToolbar(model: model)
         }
+        .compatibleToolbarRemovingSidebarToggle()
         .overlay(alignment: .topTrailing) {
             PhoneCapturePopoverHost(model: model)
                 .padding(.top, 8)

@@ -175,6 +175,88 @@ extension View {
             background(color)
         }
     }
+
+    @ViewBuilder
+    func compatibleToolbarRemovingSidebarToggle() -> some View {
+        if #available(macOS 14, *) {
+            toolbar(removing: .sidebarToggle)
+                .background(SidebarToggleRemover())
+        } else {
+            background(SidebarToggleRemover())
+        }
+    }
+}
+
+private struct SidebarToggleRemover: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        SidebarToggleRemovalView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let removalView = nsView as? SidebarToggleRemovalView else { return }
+        removalView.removeSidebarToggle()
+    }
+}
+
+private final class SidebarToggleRemovalView: NSView {
+    private static let swiftUISidebarToggleIdentifier = NSToolbarItem.Identifier(
+        "com.apple.SwiftUI.navigationSplitView.toggleSidebar"
+    )
+    private weak var observedToolbar: NSToolbar?
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        stopObservingToolbar()
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observedToolbar = window?.toolbar
+        if let observedToolbar {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(toolbarWillAddItem),
+                name: NSToolbar.willAddItemNotification,
+                object: observedToolbar
+            )
+        }
+        removeSidebarToggle()
+    }
+
+    func removeSidebarToggle() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  let toolbar = self.window?.toolbar,
+                  let index = toolbar.items.firstIndex(where: {
+                      Self.isSidebarToggle($0)
+                  })
+            else { return }
+            toolbar.removeItem(at: index)
+        }
+    }
+
+    @objc private func toolbarWillAddItem(_ notification: Notification) {
+        guard let item = notification.userInfo?["item"] as? NSToolbarItem,
+              Self.isSidebarToggle(item)
+        else { return }
+        removeSidebarToggle()
+    }
+
+    private static func isSidebarToggle(_ item: NSToolbarItem) -> Bool {
+        item.itemIdentifier == .toggleSidebar
+            || item.itemIdentifier == swiftUISidebarToggleIdentifier
+    }
+
+    private func stopObservingToolbar() {
+        if let observedToolbar {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSToolbar.willAddItemNotification,
+                object: observedToolbar
+            )
+        }
+        observedToolbar = nil
+    }
 }
 
 @available(macOS, introduced: 10.15, obsoleted: 14)
