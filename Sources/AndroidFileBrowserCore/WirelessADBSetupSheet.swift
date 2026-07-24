@@ -66,13 +66,15 @@ struct WirelessADBSetupSheet: View {
 
         case .readyToConnect(let verificationUnavailable):
             VStack(alignment: .leading, spacing: 12) {
-                Text("ASOP File Browser will ask ADB to listen over Wi-Fi, connect to the phone’s Wi-Fi address, and confirm the connection before you unplug the cable.")
+                Text("Do you want to switch this device from USB ADB to Wi-Fi ADB?")
+                    .font(.headline)
+                Text("After you confirm, ASOP File Browser will ask ADB to listen over Wi-Fi, connect to the phone’s Wi-Fi address, and verify the connection before you unplug the cable.")
                     .fixedSize(horizontal: false, vertical: true)
                 Label("Keep the cable connected until the app says Wi-Fi is ready.", systemImage: "cable.connector")
                     .foregroundStyle(.secondary)
                 if verificationUnavailable {
                     Label(
-                        "This Android version did not report the Wireless debugging setting. You can still try the standard USB-to-Wi-Fi handoff.",
+                        "Android did not report the paired Wireless debugging setting. The USB-authorized handoff can still be attempted after you confirm.",
                         systemImage: "info.circle"
                     )
                     .font(.callout)
@@ -86,9 +88,18 @@ struct WirelessADBSetupSheet: View {
 
         case .needsWirelessDebugging:
             VStack(alignment: .leading, spacing: 12) {
-                Text("Wireless debugging is off on this phone.")
+                Text("Android’s paired Wireless debugging setting is off.")
                     .font(.headline)
-                Text("On the Android device:")
+                Text("This setting is not required for the USB-authorized ADB handoff. ASOP File Browser can still ask this device to listen on Wi-Fi after you confirm; some devices or networks may not support it.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Label(
+                    "This does not turn on Android’s Wireless debugging setting or pair the Mac permanently.",
+                    systemImage: "info.circle"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Text("To use Android’s paired Wireless debugging instead:")
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 8) {
                     instructionRow(number: 1, text: "Open Settings.")
@@ -170,7 +181,7 @@ struct WirelessADBSetupSheet: View {
                 Button("Cancel", role: .cancel) {
                     model.dismissWirelessADBSetup()
                 }
-                Button("Connect via Wi-Fi") {
+                Button("Switch to Wi-Fi ADB") {
                     model.confirmWirelessADBSetup()
                 }
                 .buttonStyle(.borderedProminent)
@@ -182,6 +193,9 @@ struct WirelessADBSetupSheet: View {
                 }
                 Button("Retry") {
                     model.retryWirelessADBPreflight()
+                }
+                Button("Switch via USB ADB") {
+                    model.confirmWirelessADBSetup()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
@@ -212,11 +226,11 @@ struct WirelessADBSetupSheet: View {
     private var title: String {
         switch phase {
         case .checking:
-            "Connect via Wi-Fi"
+            "Checking Wi-Fi ADB"
         case .readyToConnect:
-            "Connect via Wi-Fi"
+            "Switch to Wi-Fi ADB?"
         case .needsWirelessDebugging:
-            "Turn On Wireless Debugging"
+            "Wireless Debugging Is Off"
         case .connecting:
             "Connecting via Wi-Fi"
         case .connected:

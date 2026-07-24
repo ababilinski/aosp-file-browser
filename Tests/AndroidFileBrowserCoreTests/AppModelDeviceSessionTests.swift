@@ -149,6 +149,39 @@ final class AppModelDeviceSessionTests: XCTestCase {
         XCTAssertEqual(model.wirelessADBSetupPresentation?.deviceName, "First")
     }
 
+    func testWirelessSetupWaitsForConfirmationAndCanUseUSBHandoffWhenSettingIsOff() async throws {
+        let runner = SlowAppLoadingProcessRunner()
+        let model = makeModel(runner: runner)
+        let device = AndroidDevice(
+            serial: "first-device",
+            state: .device,
+            model: "First",
+            product: nil,
+            transport: "1",
+            usbLocation: "1-2"
+        )
+        model.devices = [device]
+        model.selectedDeviceID = device.id
+
+        model.requestWirelessADBSetup(for: device.id)
+
+        try await waitUntil(timeout: .seconds(2)) {
+            model.wirelessADBSetupPresentation?.phase == .needsWirelessDebugging
+        }
+        var commands = await runner.commands()
+        XCTAssertFalse(commands.contains { $0.last?.contains("ip route get") == true })
+        XCTAssertFalse(commands.contains(["-s", device.serial, "tcpip", "5555"]))
+
+        model.confirmWirelessADBSetup()
+
+        try await waitUntil(timeout: .seconds(2)) {
+            let commands = await runner.commands()
+            return commands.contains { $0.last?.contains("ip route get") == true }
+        }
+        commands = await runner.commands()
+        XCTAssertTrue(commands.contains { $0.last?.contains("ip route get") == true })
+    }
+
     private func makeModel(runner: SlowAppLoadingProcessRunner) -> AppModel {
         let suiteName = "AndroidFileBrowserCoreTests.AppModelDeviceSession.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -185,8 +218,10 @@ private actor SlowAppLoadingProcessRunner: ProcessRunning {
     private var slowDetailsStarted = false
     private var slowDetailsCancellations = 0
     private var installStarted = false
+    private var recordedCommands: [[String]] = []
 
     func run(executable: URL, arguments: [String]) async throws -> ADBCommandResult {
+        recordedCommands.append(arguments)
         if arguments == ["version"] {
             return result("Android Debug Bridge version 1.0.41\nVersion 37.0.0-test\n")
         }
@@ -283,6 +318,10 @@ private actor SlowAppLoadingProcessRunner: ProcessRunning {
 
     func slowDetailsCancellationCount() -> Int {
         slowDetailsCancellations
+    }
+
+    func commands() -> [[String]] {
+        recordedCommands
     }
 
     private func result(_ output: String) -> ADBCommandResult {

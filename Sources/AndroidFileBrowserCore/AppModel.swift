@@ -1463,7 +1463,14 @@ public final class AppModel: ObservableObject {
     }
 
     public func confirmWirelessADBSetup() {
-        guard let deviceID = wirelessADBSetupPresentation?.deviceID else { return }
+        guard let presentation = wirelessADBSetupPresentation else { return }
+        switch presentation.phase {
+        case .readyToConnect, .needsWirelessDebugging:
+            break
+        case .checking, .connecting, .connected, .failed:
+            return
+        }
+        let deviceID = presentation.deviceID
         startWirelessADBSetup(for: deviceID)
     }
 
