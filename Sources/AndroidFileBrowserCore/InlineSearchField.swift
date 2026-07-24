@@ -4,49 +4,96 @@ struct InlineSearchField: View {
     @Binding var text: String
     let prompt: String
     private let kindFilter: Binding<FileSearchKindFilter>?
+    @State private var isExpanded: Bool
     @State private var isSuggestionPopoverPresented = false
     @State private var suppressSuggestions = false
     @FocusState private var isFocused: Bool
+    @Namespace private var searchTransition
 
     init(text: Binding<String>, prompt: String) {
         self._text = text
         self.prompt = prompt
         self.kindFilter = nil
+        self._isExpanded = State(initialValue: !text.wrappedValue.isEmpty)
     }
 
     init(text: Binding<String>, prompt: String, kindFilter: Binding<FileSearchKindFilter>) {
         self._text = text
         self.prompt = prompt
         self.kindFilter = kindFilter
+        self._isExpanded = State(
+            initialValue: !text.wrappedValue.isEmpty || kindFilter.wrappedValue != .any
+        )
     }
 
     var body: some View {
-        searchControl
-            .popover(
-                isPresented: $isSuggestionPopoverPresented,
-                attachmentAnchor: .rect(.bounds),
-                arrowEdge: .top
-            ) {
-                SearchSuggestionPanel(
-                    query: trimmedText,
-                    kindSuggestions: kindSuggestions,
-                    selectNameSearch: selectNameSearch,
-                    selectKind: selectKind
-                )
-                .compatiblePresentationBackground(Color(nsColor: .windowBackgroundColor))
+        ZStack(alignment: .trailing) {
+            if isExpanded {
+                searchControl
+                    .transition(.opacity)
+            } else {
+                searchButton
+                    .transition(.opacity)
             }
-            .frame(width: 300)
-            .onValueChange(of: isFocused) { _, focused in
-                if focused {
-                    updateSuggestionPresentation()
-                }
+        }
+        .frame(width: isExpanded ? 300 : 36, alignment: .trailing)
+        .animation(.snappy(duration: 0.24), value: isExpanded)
+        .popover(
+            isPresented: $isSuggestionPopoverPresented,
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .top
+        ) {
+            SearchSuggestionPanel(
+                query: trimmedText,
+                kindSuggestions: kindSuggestions,
+                selectNameSearch: selectNameSearch,
+                selectKind: selectKind
+            )
+            .compatiblePresentationBackground(Color(nsColor: .windowBackgroundColor))
+        }
+        .onValueChange(of: isFocused) { _, focused in
+            if focused {
+                updateSuggestionPresentation()
+            } else if !hasActiveSearch {
+                collapseSearch()
             }
+        }
+        .onValueChange(of: activeKindFilter) { _, _ in
+            if hasActiveSearch {
+                isExpanded = true
+            } else if !isFocused {
+                collapseSearch()
+            }
+        }
+    }
+
+    private var searchButton: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.24)) {
+                isExpanded = true
+            }
+        } label: {
+            Label {
+                Text("Search")
+            } icon: {
+                Image(systemName: "magnifyingglass")
+                    .matchedGeometryEffect(id: "search-icon", in: searchTransition)
+            }
+            .labelStyle(.iconOnly)
+            .frame(width: 20, height: 20)
+        }
+        .controlSize(.large)
+        .liquidGlassButton()
+        .help("Search")
+        .accessibilityLabel("Search")
+        .accessibilityIdentifier("search-button")
     }
 
     private var searchControl: some View {
         HStack(spacing: 7) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
+                .matchedGeometryEffect(id: "search-icon", in: searchTransition)
 
             if let kindFilter, activeKindFilter != .any {
                 SearchKindToken(filter: kindFilter)
@@ -56,15 +103,22 @@ struct InlineSearchField: View {
                 .textFieldStyle(.plain)
                 .lineLimit(1)
                 .focused($isFocused)
+                .accessibilityIdentifier("search-field")
                 .onValueChange(of: text) { _, _ in
                     suppressSuggestions = false
                     updateSuggestionPresentation()
                 }
+                .onExitCommand {
+                    if hasActiveSearch {
+                        clearAndCollapseSearch()
+                    } else {
+                        collapseSearch()
+                    }
+                }
 
             if hasActiveSearch {
                 Button {
-                    kindFilter?.wrappedValue = .any
-                    text = ""
+                    clearAndCollapseSearch()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -78,10 +132,15 @@ struct InlineSearchField: View {
         .padding(.vertical, 7)
         .frame(width: 300)
         .liquidGlassPanel(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .onTapGesture {
-            if !trimmedText.isEmpty {
-                suppressSuggestions = false
+        .onAppear {
+            DispatchQueue.main.async {
                 isFocused = true
+            }
+        }
+        .onTapGesture {
+            suppressSuggestions = false
+            isFocused = true
+            if !trimmedText.isEmpty {
                 updateSuggestionPresentation()
             }
         }
@@ -113,6 +172,24 @@ struct InlineSearchField: View {
             && !suppressSuggestions
             && !trimmedText.isEmpty
             && isFocused
+    }
+
+    private func clearAndCollapseSearch() {
+        kindFilter?.wrappedValue = .any
+        text = ""
+        suppressSuggestions = true
+        isSuggestionPopoverPresented = false
+        isFocused = false
+        collapseSearch()
+    }
+
+    private func collapseSearch() {
+        guard !hasActiveSearch else { return }
+        suppressSuggestions = true
+        isSuggestionPopoverPresented = false
+        withAnimation(.snappy(duration: 0.24)) {
+            isExpanded = false
+        }
     }
 
     private func selectNameSearch() {
