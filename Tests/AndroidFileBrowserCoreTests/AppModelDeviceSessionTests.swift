@@ -351,7 +351,17 @@ final class AppModelDeviceSessionTests: XCTestCase {
 
     func testSecurePairingStartsAfterWirelessSetupSheetDismisses() async throws {
         let runner = SlowAppLoadingProcessRunner(wirelessSettingOutput: "1\n")
-        let model = makeModel(runner: runner)
+        let toolchainManager = ToolchainManager(
+            locator: ToolchainLocator(
+                adbOverride: URL(fileURLWithPath: "/tmp/test-adb"),
+                scrcpyOverride: URL(fileURLWithPath: "/tmp/test-scrcpy")
+            ),
+            installer: nil,
+            runner: runner
+        )
+        await toolchainManager.refresh()
+        XCTAssertTrue(toolchainManager.status(for: .adb).isReady)
+        let model = makeModel(runner: runner, toolchainManager: toolchainManager)
         let device = AndroidDevice(
             serial: "first-device",
             state: .device,
@@ -372,12 +382,13 @@ final class AppModelDeviceSessionTests: XCTestCase {
         XCTAssertNil(model.adbQRPairingSession)
 
         model.wirelessADBSetupSheetDidDismiss()
-        try await waitUntil(timeout: .seconds(2)) {
-            model.adbQRPairingSession != nil || model.toolSetupRequest != nil
-        }
+        XCTAssertNotNil(model.adbQRPairingSession)
     }
 
-    private func makeModel(runner: SlowAppLoadingProcessRunner) -> AppModel {
+    private func makeModel(
+        runner: SlowAppLoadingProcessRunner,
+        toolchainManager: ToolchainManager = ToolchainManager()
+    ) -> AppModel {
         let suiteName = "AndroidFileBrowserCoreTests.AppModelDeviceSession.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -388,6 +399,7 @@ final class AppModelDeviceSessionTests: XCTestCase {
         return AppModel(
             adb: adb,
             settings: AppSettings(defaults: defaults),
+            toolchainManager: toolchainManager,
             initialTrashRecords: []
         )
     }
