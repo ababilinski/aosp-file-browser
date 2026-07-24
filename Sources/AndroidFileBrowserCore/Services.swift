@@ -31,6 +31,23 @@ public actor DeviceManager {
         guard device.state == .device else {
             throw ADBWirelessConnectionError.deviceNotReady
         }
+        let capability = try await adb.shell(
+            serial: device.serial,
+            "cmd adb is-wifi-supported 2>/dev/null",
+            allowFailure: true,
+            timeout: 8
+        )
+        if capability.exitCode == 0 {
+            switch capability.stdout.trimmingCharacters(in: .whitespacesAndNewlines) {
+            case "false":
+                return .unsupported
+            case "true":
+                break
+            default:
+                break
+            }
+        }
+
         let result = try await adb.shell(
             serial: device.serial,
             "settings get global adb_wifi_enabled 2>/dev/null",
@@ -46,6 +63,58 @@ public actor DeviceManager {
         default:
             return .unavailable
         }
+    }
+
+    public func requestWirelessDebuggingEnablement(
+        device: AndroidDevice
+    ) async throws -> ADBWirelessDebuggingStatus {
+        guard device.state == .device else {
+            throw ADBWirelessConnectionError.deviceNotReady
+        }
+        guard device.connectionKind == .usb else {
+            throw ADBWirelessConnectionError.requiresUSB
+        }
+
+        switch try await wirelessDebuggingStatus(device: device) {
+        case .enabled:
+            return .enabled
+        case .unsupported:
+            return .unsupported
+        case .disabled, .unavailable:
+            break
+        }
+
+        let result = try await adb.shell(
+            serial: device.serial,
+            "settings put global adb_wifi_enabled 1",
+            allowFailure: true,
+            timeout: 8
+        )
+        guard result.exitCode == 0 else {
+            throw ADBWirelessConnectionError.wirelessSettingFailed(commandMessage(result))
+        }
+
+        var consecutiveEnabledReadings = 0
+        var fallbackStatus: ADBWirelessDebuggingStatus = .unavailable
+        for _ in 0..<6 {
+            try await Task.sleep(for: .milliseconds(250))
+            let status = try await wirelessDebuggingStatus(device: device)
+            switch status {
+            case .enabled:
+                consecutiveEnabledReadings += 1
+                if consecutiveEnabledReadings >= 2 {
+                    return .enabled
+                }
+            case .unsupported:
+                return status
+            case .disabled:
+                consecutiveEnabledReadings = 0
+                fallbackStatus = .disabled
+            case .unavailable:
+                consecutiveEnabledReadings = 0
+            }
+        }
+        return fallbackStatus
     }
 
     public func enableWirelessADB(device: AndroidDevice, port: Int = 5555) async throws -> String {
@@ -67,36 +136,79 @@ public actor DeviceManager {
         }
 
         let endpoint = "\(address):\(port)"
-        let tcpIP = try await adb.run(
-            ["-s", device.serial, "tcpip", String(port)],
-            allowFailure: true,
-            timeout: 20
-        )
+        let tcpIP: ADBCommandResult
+        do {
+            tcpIP = try await adb.run(
+                ["-s", device.serial, "tcpip", String(port)],
+                allowFailure: true,
+                timeout: 20
+            )
+        } catch is CancellationError {
+            _ = await restoreUSBADB(serial: device.serial)
+            throw CancellationError()
+        } catch {
+            let rollbackMessage = await restoreUSBADB(serial: device.serial)
+            throw ADBWirelessConnectionError.tcpIPFailed(
+                message: error.localizedDescription,
+                rollbackMessage: rollbackMessage
+            )
+        }
         guard tcpIP.exitCode == 0,
               (tcpIP.stdout + tcpIP.stderr).localizedCaseInsensitiveContains("restarting in TCP mode") else {
-            throw ADBWirelessConnectionError.tcpIPFailed(commandMessage(tcpIP))
+            let rollbackMessage = await restoreUSBADB(serial: device.serial)
+            throw ADBWirelessConnectionError.tcpIPFailed(
+                message: commandMessage(tcpIP),
+                rollbackMessage: rollbackMessage
+            )
         }
 
         var lastConnectionMessage = ""
-        for attempt in 0..<4 {
-            if attempt > 0 {
-                try await Task.sleep(for: .milliseconds(400))
-            }
-            let connection = try await adb.run(["connect", endpoint], allowFailure: true, timeout: 12)
-            lastConnectionMessage = commandMessage(connection)
-            let normalized = lastConnectionMessage.lowercased()
-            if connection.exitCode == 0,
-               normalized.contains("connected to") || normalized.contains("already connected") {
-                if try await devices().contains(where: { $0.serial == endpoint && $0.state == .device }) {
-                    return endpoint
+        do {
+            for attempt in 0..<4 {
+                if attempt > 0 {
+                    try await Task.sleep(for: .milliseconds(400))
+                }
+                let connection = try await adb.run(["connect", endpoint], allowFailure: true, timeout: 12)
+                lastConnectionMessage = commandMessage(connection)
+                let normalized = lastConnectionMessage.lowercased()
+                if connection.exitCode == 0,
+                   normalized.contains("connected to") || normalized.contains("already connected") {
+                    if try await devices().contains(where: { $0.serial == endpoint && $0.state == .device }) {
+                        return endpoint
+                    }
                 }
             }
+        } catch is CancellationError {
+            _ = await restoreUSBADB(serial: device.serial)
+            throw CancellationError()
+        } catch {
+            lastConnectionMessage = error.localizedDescription
         }
 
+        let rollbackMessage = await restoreUSBADB(serial: device.serial)
         throw ADBWirelessConnectionError.connectionFailed(
             endpoint: endpoint,
-            message: lastConnectionMessage
+            message: lastConnectionMessage,
+            rollbackMessage: rollbackMessage
         )
+    }
+
+    private func restoreUSBADB(serial: String) async -> String {
+        do {
+            let result = try await adb.run(
+                ["-s", serial, "usb"],
+                allowFailure: true,
+                timeout: 20
+            )
+            let message = commandMessage(result)
+            if result.exitCode == 0,
+               message.localizedCaseInsensitiveContains("restarting in USB mode") {
+                return "ASOP File Browser returned ADB to USB-only mode."
+            }
+            return "Warning: Android did not confirm that legacy port 5555 was disabled. Disconnect from untrusted networks or turn USB debugging off and on. Rollback details: \(message)"
+        } catch {
+            return "Warning: Android did not confirm that legacy port 5555 was disabled. Disconnect from untrusted networks or turn USB debugging off and on. Rollback details: \(error.localizedDescription)"
+        }
     }
 
     private func commandMessage(_ result: ADBCommandResult) -> String {
@@ -112,8 +224,9 @@ public enum ADBWirelessConnectionError: LocalizedError, Equatable, Sendable {
     case requiresUSB
     case deviceNotReady
     case noWiFiAddress
-    case tcpIPFailed(String)
-    case connectionFailed(endpoint: String, message: String)
+    case wirelessSettingFailed(String)
+    case tcpIPFailed(message: String, rollbackMessage: String)
+    case connectionFailed(endpoint: String, message: String, rollbackMessage: String)
 
     public var errorDescription: String? {
         switch self {
@@ -123,10 +236,12 @@ public enum ADBWirelessConnectionError: LocalizedError, Equatable, Sendable {
             "Authorize Developer Options on the Android device, then try again."
         case .noWiFiAddress:
             "The device does not have a usable Wi-Fi address. Connect the Mac and Android device to the same Wi-Fi network, then try again."
-        case .tcpIPFailed(let message):
-            "ADB could not enable network debugging. \(message)"
-        case .connectionFailed(let endpoint, let message):
-            "ADB enabled network debugging but could not connect to \(endpoint). Keep the cable connected, confirm both devices are on the same Wi-Fi network, and try again. \(message)"
+        case .wirelessSettingFailed(let message):
+            "Android did not allow Wireless debugging to be turned on over USB ADB. \(message)"
+        case .tcpIPFailed(let message, let rollbackMessage):
+            "ADB could not confirm that network debugging started. \(message)\n\n\(rollbackMessage)"
+        case .connectionFailed(let endpoint, let message, let rollbackMessage):
+            "ADB enabled network debugging but could not connect to \(endpoint). Keep the cable connected, confirm both devices are on the same Wi-Fi network, and try again. \(message)\n\n\(rollbackMessage)"
         }
     }
 }

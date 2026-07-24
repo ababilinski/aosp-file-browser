@@ -14,7 +14,7 @@ struct WirelessADBSetupSheet: View {
         }
         .padding(24)
         .frame(width: 480)
-        .interactiveDismissDisabled(isConnecting)
+        .interactiveDismissDisabled(isBusy)
     }
 
     private var presentation: ADBWirelessSetupPresentation? {
@@ -30,9 +30,13 @@ struct WirelessADBSetupSheet: View {
         presentation?.deviceName ?? "Android device"
     }
 
-    private var isConnecting: Bool {
-        if case .connecting = phase { return true }
-        return false
+    private var isBusy: Bool {
+        switch phase {
+        case .enablingWirelessDebugging, .connecting:
+            true
+        default:
+            false
+        }
     }
 
     private var header: some View {
@@ -66,23 +70,20 @@ struct WirelessADBSetupSheet: View {
 
         case .readyToConnect(let verificationUnavailable):
             VStack(alignment: .leading, spacing: 12) {
-                Text("Do you want to switch this device from USB ADB to Wi-Fi ADB?")
+                Text("Do you want to use the legacy USB ADB handoff?")
                     .font(.headline)
-                Text("After you confirm, ASOP File Browser will ask ADB to listen over Wi-Fi, connect to the phone’s Wi-Fi address, and verify the connection before you unplug the cable.")
+                Text("After you confirm, ASOP File Browser will ask this USB-authorized device to listen on unencrypted port 5555, connect to its Wi-Fi address, and verify the connection before you unplug the cable.")
                     .fixedSize(horizontal: false, vertical: true)
                 Label("Keep the cable connected until the app says Wi-Fi is ready.", systemImage: "cable.connector")
                     .foregroundStyle(.secondary)
                 if verificationUnavailable {
                     Label(
-                        "Android did not report the paired Wireless debugging setting. The USB-authorized handoff can still be attempted after you confirm.",
+                        "Android did not report whether secure Wireless debugging is available. This legacy handoff can still be attempted after you confirm.",
                         systemImage: "info.circle"
                     )
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Label("Wireless debugging is enabled.", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
                 }
             }
 
@@ -90,28 +91,126 @@ struct WirelessADBSetupSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Android’s paired Wireless debugging setting is off.")
                     .font(.headline)
-                Text("This setting is not required for the USB-authorized ADB handoff. ASOP File Browser can still ask this device to listen on Wi-Fi after you confirm; some devices or networks may not support it.")
-                    .fixedSize(horizontal: false, vertical: true)
-                Label(
-                    "This does not turn on Android’s Wireless debugging setting or pair the Mac permanently.",
-                    systemImage: "info.circle"
-                )
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                Text("To use Android’s paired Wireless debugging instead:")
+                Text("Choose how you want to continue. Neither option runs until you confirm it.")
                     .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 8) {
-                    instructionRow(number: 1, text: "Open Settings.")
-                    instructionRow(number: 2, text: "Open System › Developer options.")
-                    instructionRow(number: 3, text: "Turn on Wireless debugging.")
-                    instructionRow(number: 4, text: "Keep the phone unlocked and on the same Wi-Fi network as this Mac.")
-                }
+                setupOption(
+                    title: "Turn on Wireless debugging",
+                    detail: "Ask Android to enable its encrypted, paired Wi-Fi ADB setting. Android may require approval on the phone for this Wi-Fi network.",
+                    symbol: "lock.shield",
+                    buttonTitle: "Turn On…",
+                    action: model.requestWirelessDebuggingEnablement
+                )
+                setupOption(
+                    title: "Use the USB handoff",
+                    detail: "Temporarily ask this USB-authorized device to listen on port 5555. This legacy connection is not encrypted.",
+                    symbol: "cable.connector",
+                    buttonTitle: "Use USB Handoff",
+                    action: model.confirmWirelessADBSetup
+                )
                 Link(
                     "Open Android’s Wireless debugging guide",
                     destination: URL(string: "https://developer.android.com/tools/adb#connect-to-a-device-over-wi-fi")!
                 )
                 .font(.callout)
+            }
+
+        case .wirelessDebuggingUnsupported:
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Android reports that secure Wireless debugging is not supported on this device.")
+                    .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("ASOP File Browser will not try to change the Wireless debugging setting. You can keep using USB or explicitly try the legacy USB-authorized handoff.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                setupOption(
+                    title: "Use the USB handoff",
+                    detail: "Temporarily ask this USB-authorized device to listen on port 5555. This legacy connection is not encrypted.",
+                    symbol: "cable.connector",
+                    buttonTitle: "Use USB Handoff",
+                    action: model.confirmWirelessADBSetup
+                )
+            }
+
+        case .confirmWirelessDebuggingEnable:
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Do you want ASOP File Browser to ask Android to turn on Wireless debugging?")
+                    .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("This changes a security-sensitive Developer option. Android may display a confirmation on the phone for the current Wi-Fi network; Wireless debugging remains off until that approval is accepted.")
+                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Command")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text("adb -s \(deviceID) shell settings put global adb_wifi_enabled 1")
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(12)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                Label(
+                    "This does not pair the Mac or start the legacy port 5555 handoff.",
+                    systemImage: "info.circle"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            }
+
+        case .enablingWirelessDebugging:
+            HStack(alignment: .top, spacing: 12) {
+                ProgressView()
+                    .controlSize(.small)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Asking Android to turn on Wireless debugging…")
+                        .font(.headline)
+                    Text("Keep the phone unlocked and watch for an Android network approval prompt.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+        case .wirelessDebuggingEnabled:
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Secure Wireless debugging is on.", systemImage: "checkmark.circle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.green)
+                Text("Closing this window leaves the Android setting on. To use its encrypted connection, pair this Mac with the QR code shown by ASOP File Browser.")
+                    .fixedSize(horizontal: false, vertical: true)
+                setupOption(
+                    title: "Pair securely",
+                    detail: "Open Pair device with QR code on Android, then scan the code shown by this app.",
+                    symbol: "qrcode.viewfinder",
+                    buttonTitle: "Pair with QR Code…",
+                    action: model.startSecureWirelessPairingFromSetup
+                )
+                setupOption(
+                    title: "Use the USB handoff instead",
+                    detail: "Temporarily listen on port 5555 without encryption. This is separate from secure Wireless debugging.",
+                    symbol: "cable.connector",
+                    buttonTitle: "Use USB Handoff",
+                    action: model.confirmWirelessADBSetup
+                )
+            }
+
+        case .wirelessDebuggingApprovalRequired:
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Android still reports Wireless debugging as off.")
+                    .font(.headline)
+                Text("Unlock the phone and approve Wireless debugging on the current Wi-Fi network if Android displayed a prompt. Then check again.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Label(
+                    "If no prompt appeared, turn on Wireless debugging in Developer options manually.",
+                    systemImage: "iphone.gen3"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            }
+
+        case .wirelessDebuggingEnableFailed(let message):
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Android could not turn on Wireless debugging through the authorized USB connection.")
+                    .fixedSize(horizontal: false, vertical: true)
+                technicalDetails(message)
             }
 
         case .connecting:
@@ -140,28 +239,7 @@ struct WirelessADBSetupSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("The phone did not accept the Wi-Fi connection. Keep the cable connected, confirm both devices are on the same Wi-Fi network, and try again.")
                     .fixedSize(horizontal: false, vertical: true)
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Technical details")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Copy Details") {
-                            copyToPasteboard(message)
-                        }
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
-                    }
-                    ScrollView {
-                        Text(message)
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(maxHeight: 120)
-                }
-                .padding(12)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                technicalDetails(message)
             }
         }
     }
@@ -181,7 +259,7 @@ struct WirelessADBSetupSheet: View {
                 Button("Cancel", role: .cancel) {
                     model.dismissWirelessADBSetup()
                 }
-                Button("Switch to Wi-Fi ADB") {
+                Button("Use USB Handoff") {
                     model.confirmWirelessADBSetup()
                 }
                 .buttonStyle(.borderedProminent)
@@ -191,17 +269,56 @@ struct WirelessADBSetupSheet: View {
                 Button("Cancel", role: .cancel) {
                     model.dismissWirelessADBSetup()
                 }
-                Button("Retry") {
+                Button("Check Again") {
                     model.retryWirelessADBPreflight()
                 }
-                Button("Switch via USB ADB") {
-                    model.confirmWirelessADBSetup()
+
+            case .wirelessDebuggingUnsupported:
+                Button("Cancel", role: .cancel) {
+                    model.dismissWirelessADBSetup()
+                }
+                Button("Check Again") {
+                    model.retryWirelessADBPreflight()
+                }
+
+            case .confirmWirelessDebuggingEnable:
+                Button("Back", role: .cancel) {
+                    model.cancelWirelessDebuggingEnablement()
+                }
+                Button("Turn On Wireless Debugging") {
+                    model.confirmWirelessDebuggingEnablement()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
 
-            case .connecting:
+            case .enablingWirelessDebugging, .connecting:
                 EmptyView()
+
+            case .wirelessDebuggingEnabled:
+                Button("Done") {
+                    model.dismissWirelessADBSetup()
+                }
+                .keyboardShortcut(.cancelAction)
+
+            case .wirelessDebuggingApprovalRequired:
+                Button("Cancel", role: .cancel) {
+                    model.dismissWirelessADBSetup()
+                }
+                Button("Check Again") {
+                    model.retryWirelessDebuggingEnablement()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+
+            case .wirelessDebuggingEnableFailed:
+                Button("Cancel", role: .cancel) {
+                    model.dismissWirelessADBSetup()
+                }
+                Button("Try Again…") {
+                    model.retryWirelessDebuggingEnablement()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
 
             case .connected:
                 Button("Done") {
@@ -228,9 +345,21 @@ struct WirelessADBSetupSheet: View {
         case .checking:
             "Checking Wi-Fi ADB"
         case .readyToConnect:
-            "Switch to Wi-Fi ADB?"
+            "Use USB ADB Handoff?"
         case .needsWirelessDebugging:
             "Wireless Debugging Is Off"
+        case .wirelessDebuggingUnsupported:
+            "Wireless Debugging Isn’t Supported"
+        case .confirmWirelessDebuggingEnable:
+            "Turn On Wireless Debugging?"
+        case .enablingWirelessDebugging:
+            "Turning On Wireless Debugging"
+        case .wirelessDebuggingEnabled:
+            "Wireless Debugging Is On"
+        case .wirelessDebuggingApprovalRequired:
+            "Approval May Be Required"
+        case .wirelessDebuggingEnableFailed:
+            "Couldn’t Turn On Wireless Debugging"
         case .connecting:
             "Connecting via Wi-Fi"
         case .connected:
@@ -242,42 +371,89 @@ struct WirelessADBSetupSheet: View {
 
     private var headerSymbol: String {
         switch phase {
-        case .checking, .connecting:
+        case .checking, .enablingWirelessDebugging, .connecting:
             "wifi"
-        case .readyToConnect:
+        case .readyToConnect, .wirelessDebuggingEnabled:
             "wifi"
-        case .needsWirelessDebugging:
+        case .needsWirelessDebugging,
+             .wirelessDebuggingUnsupported,
+             .confirmWirelessDebuggingEnable,
+             .wirelessDebuggingApprovalRequired:
             "exclamationmark.triangle.fill"
         case .connected:
             "wifi.circle.fill"
-        case .failed:
+        case .wirelessDebuggingEnableFailed, .failed:
             "xmark.circle.fill"
         }
     }
 
     private var headerColor: Color {
         switch phase {
-        case .needsWirelessDebugging:
+        case .needsWirelessDebugging,
+             .wirelessDebuggingUnsupported,
+             .confirmWirelessDebuggingEnable,
+             .wirelessDebuggingApprovalRequired:
             .orange
-        case .connected:
+        case .wirelessDebuggingEnabled, .connected:
             .green
-        case .failed:
+        case .wirelessDebuggingEnableFailed, .failed:
             .red
         default:
             .accentColor
         }
     }
 
-    private func instructionRow(number: Int, text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text("\(number)")
-                .font(.caption.weight(.semibold))
+    private func setupOption(
+        title: String,
+        detail: String,
+        symbol: String,
+        buttonTitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title3)
                 .foregroundStyle(.secondary)
-                .frame(width: 18, height: 18)
-                .background(.quaternary, in: Circle())
-            Text(text)
-                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(buttonTitle, action: action)
+                    .controlSize(.small)
+            }
         }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func technicalDetails(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Technical details")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Copy Details") {
+                    copyToPasteboard(message)
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+            }
+            ScrollView {
+                Text(message)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 120)
+        }
+        .padding(12)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func copyToPasteboard(_ message: String) {

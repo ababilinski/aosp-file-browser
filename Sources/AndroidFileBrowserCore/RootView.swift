@@ -116,7 +116,9 @@ public struct RootView: View {
         .sheet(item: $model.pendingAppInstallRecovery) { request in
             AppInstallRecoverySheet(model: model, request: request)
         }
-        .sheet(item: $model.wirelessADBSetupPresentation) { presentation in
+        .sheet(item: $model.wirelessADBSetupPresentation, onDismiss: {
+            model.wirelessADBSetupSheetDidDismiss()
+        }) { presentation in
             WirelessADBSetupSheet(model: model, deviceID: presentation.deviceID)
         }
         .sheet(item: $model.adbQRPairingSession, onDismiss: {

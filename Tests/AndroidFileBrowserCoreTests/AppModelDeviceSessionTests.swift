@@ -182,6 +182,201 @@ final class AppModelDeviceSessionTests: XCTestCase {
         XCTAssertTrue(commands.contains { $0.last?.contains("ip route get") == true })
     }
 
+    func testWirelessSettingWriteRequiresSeparateExplicitConfirmation() async throws {
+        let runner = SlowAppLoadingProcessRunner()
+        let model = makeModel(runner: runner)
+        let device = AndroidDevice(
+            serial: "first-device",
+            state: .device,
+            model: "First",
+            product: nil,
+            transport: "1",
+            usbLocation: "1-2"
+        )
+        model.devices = [device]
+        model.selectedDeviceID = device.id
+
+        model.requestWirelessADBSetup(for: device.id)
+        try await waitUntil(timeout: .seconds(2)) {
+            model.wirelessADBSetupPresentation?.phase == .needsWirelessDebugging
+        }
+
+        model.requestWirelessDebuggingEnablement()
+
+        XCTAssertEqual(
+            model.wirelessADBSetupPresentation?.phase,
+            .confirmWirelessDebuggingEnable
+        )
+        var commands = await runner.commands()
+        XCTAssertFalse(commands.contains {
+            $0.last == "settings put global adb_wifi_enabled 1"
+        })
+
+        model.confirmWirelessDebuggingEnablement()
+
+        try await waitUntil(timeout: .seconds(2)) {
+            let commands = await runner.commands()
+            return commands.contains {
+                $0.last == "settings put global adb_wifi_enabled 1"
+            }
+        }
+        commands = await runner.commands()
+        XCTAssertTrue(commands.contains {
+            $0.last == "settings put global adb_wifi_enabled 1"
+        })
+        try await waitUntil(timeout: .seconds(2)) {
+            model.wirelessADBSetupPresentation?.phase == .wirelessDebuggingApprovalRequired
+        }
+    }
+
+    func testSecureWirelessDebuggingPathNeverStartsLegacyTCPIP() async throws {
+        let runner = SlowAppLoadingProcessRunner(wirelessSettingOutputAfterEnable: "1\n")
+        let model = makeModel(runner: runner)
+        let device = AndroidDevice(
+            serial: "first-device",
+            state: .device,
+            model: "First",
+            product: nil,
+            transport: "1",
+            usbLocation: "1-2"
+        )
+        model.devices = [device]
+
+        model.requestWirelessADBSetup(for: device.id)
+        try await waitUntil(timeout: .seconds(2)) {
+            model.wirelessADBSetupPresentation?.phase == .needsWirelessDebugging
+        }
+        model.requestWirelessDebuggingEnablement()
+        model.confirmWirelessDebuggingEnablement()
+        try await waitUntil(timeout: .seconds(2)) {
+            model.wirelessADBSetupPresentation?.phase == .wirelessDebuggingEnabled
+        }
+
+        let commands = await runner.commands()
+        XCTAssertTrue(commands.contains {
+            $0.last == "settings put global adb_wifi_enabled 1"
+        })
+        XCTAssertFalse(commands.contains(["-s", device.serial, "tcpip", "5555"]))
+        XCTAssertFalse(commands.contains {
+            $0.last?.contains("ip route get") == true
+        })
+    }
+
+    func testUnsupportedWirelessDebuggingSkipsSettingWrite() async throws {
+        let runner = SlowAppLoadingProcessRunner(wirelessCapabilityOutput: "false\n")
+        let model = makeModel(runner: runner)
+        let device = AndroidDevice(
+            serial: "first-device",
+            state: .device,
+            model: "First",
+            product: nil,
+            transport: "1",
+            usbLocation: "1-2"
+        )
+        model.devices = [device]
+
+        model.requestWirelessADBSetup(for: device.id)
+        try await waitUntil(timeout: .seconds(2)) {
+            model.wirelessADBSetupPresentation?.phase == .wirelessDebuggingUnsupported
+        }
+
+        let commands = await runner.commands()
+        XCTAssertTrue(commands.contains {
+            $0.last == "cmd adb is-wifi-supported 2>/dev/null"
+        })
+        XCTAssertFalse(commands.contains {
+            $0.last == "settings put global adb_wifi_enabled 1"
+        })
+    }
+
+    func testWirelessSettingConfirmationReportsUSBDisconnect() async throws {
+        let runner = SlowAppLoadingProcessRunner()
+        let model = makeModel(runner: runner)
+        let device = AndroidDevice(
+            serial: "first-device",
+            state: .device,
+            model: "First",
+            product: nil,
+            transport: "1",
+            usbLocation: "1-2"
+        )
+        model.devices = [device]
+
+        model.requestWirelessADBSetup(for: device.id)
+        try await waitUntil(timeout: .seconds(2)) {
+            model.wirelessADBSetupPresentation?.phase == .needsWirelessDebugging
+        }
+        model.requestWirelessDebuggingEnablement()
+        model.devices = []
+        model.confirmWirelessDebuggingEnablement()
+
+        guard case .wirelessDebuggingEnableFailed(let message) =
+            model.wirelessADBSetupPresentation?.phase else {
+            return XCTFail("Expected an actionable disconnect failure")
+        }
+        XCTAssertTrue(message.contains("USB device disconnected"))
+        let commands = await runner.commands()
+        XCTAssertFalse(commands.contains {
+            $0.last == "settings put global adb_wifi_enabled 1"
+        })
+    }
+
+    func testLegacyHandoffReportsUSBDisconnect() async throws {
+        let runner = SlowAppLoadingProcessRunner()
+        let model = makeModel(runner: runner)
+        let device = AndroidDevice(
+            serial: "first-device",
+            state: .device,
+            model: "First",
+            product: nil,
+            transport: "1",
+            usbLocation: "1-2"
+        )
+        model.devices = [device]
+
+        model.requestWirelessADBSetup(for: device.id)
+        try await waitUntil(timeout: .seconds(2)) {
+            model.wirelessADBSetupPresentation?.phase == .needsWirelessDebugging
+        }
+        model.devices = []
+        model.confirmWirelessADBSetup()
+
+        guard case .failed(let message) = model.wirelessADBSetupPresentation?.phase else {
+            return XCTFail("Expected an actionable disconnect failure")
+        }
+        XCTAssertTrue(message.contains("USB device disconnected"))
+        let commands = await runner.commands()
+        XCTAssertFalse(commands.contains(["-s", device.serial, "tcpip", "5555"]))
+    }
+
+    func testSecurePairingStartsAfterWirelessSetupSheetDismisses() async throws {
+        let runner = SlowAppLoadingProcessRunner(wirelessSettingOutput: "1\n")
+        let model = makeModel(runner: runner)
+        let device = AndroidDevice(
+            serial: "first-device",
+            state: .device,
+            model: "First",
+            product: nil,
+            transport: "1",
+            usbLocation: "1-2"
+        )
+        model.devices = [device]
+
+        model.requestWirelessADBSetup(for: device.id)
+        try await waitUntil(timeout: .seconds(2)) {
+            model.wirelessADBSetupPresentation?.phase == .wirelessDebuggingEnabled
+        }
+        model.startSecureWirelessPairingFromSetup()
+
+        XCTAssertNil(model.wirelessADBSetupPresentation)
+        XCTAssertNil(model.adbQRPairingSession)
+
+        model.wirelessADBSetupSheetDidDismiss()
+        try await waitUntil(timeout: .seconds(2)) {
+            model.adbQRPairingSession != nil || model.toolSetupRequest != nil
+        }
+    }
+
     private func makeModel(runner: SlowAppLoadingProcessRunner) -> AppModel {
         let suiteName = "AndroidFileBrowserCoreTests.AppModelDeviceSession.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -214,11 +409,24 @@ final class AppModelDeviceSessionTests: XCTestCase {
 }
 
 private actor SlowAppLoadingProcessRunner: ProcessRunning {
+    private let wirelessCapabilityOutput: String
+    private var wirelessSettingOutput: String
+    private let wirelessSettingOutputAfterEnable: String
     private var connectedDeviceSerials = ["first-device", "second-device"]
     private var slowDetailsStarted = false
     private var slowDetailsCancellations = 0
     private var installStarted = false
     private var recordedCommands: [[String]] = []
+
+    init(
+        wirelessCapabilityOutput: String = "true\n",
+        wirelessSettingOutput: String = "0\n",
+        wirelessSettingOutputAfterEnable: String = "0\n"
+    ) {
+        self.wirelessCapabilityOutput = wirelessCapabilityOutput
+        self.wirelessSettingOutput = wirelessSettingOutput
+        self.wirelessSettingOutputAfterEnable = wirelessSettingOutputAfterEnable
+    }
 
     func run(executable: URL, arguments: [String]) async throws -> ADBCommandResult {
         recordedCommands.append(arguments)
@@ -268,8 +476,15 @@ private actor SlowAppLoadingProcessRunner: ProcessRunning {
                 """
             )
         }
+        if command == "cmd adb is-wifi-supported 2>/dev/null" {
+            return result(wirelessCapabilityOutput)
+        }
+        if command == "settings put global adb_wifi_enabled 1" {
+            wirelessSettingOutput = wirelessSettingOutputAfterEnable
+            return result("")
+        }
         if command.contains("settings get global adb_wifi_enabled") {
-            return result("0\n")
+            return result(wirelessSettingOutput)
         }
         if serial == "first-device", command.hasPrefix("stat -c %s ") {
             slowDetailsStarted = true

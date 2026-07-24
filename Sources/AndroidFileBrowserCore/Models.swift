@@ -103,6 +103,7 @@ public enum ADBWirelessSetupState: Equatable, Sendable {
 public enum ADBWirelessDebuggingStatus: Equatable, Sendable {
     case enabled
     case disabled
+    case unsupported
     case unavailable
 }
 
@@ -111,6 +112,12 @@ public struct ADBWirelessSetupPresentation: Identifiable, Equatable, Sendable {
         case checking
         case readyToConnect(verificationUnavailable: Bool)
         case needsWirelessDebugging
+        case wirelessDebuggingUnsupported
+        case confirmWirelessDebuggingEnable
+        case enablingWirelessDebugging
+        case wirelessDebuggingEnabled
+        case wirelessDebuggingApprovalRequired
+        case wirelessDebuggingEnableFailed(message: String)
         case connecting
         case connected(endpoint: String)
         case failed(message: String)
