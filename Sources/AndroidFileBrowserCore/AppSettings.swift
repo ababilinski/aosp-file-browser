@@ -41,6 +41,12 @@ public final class AppSettings: ObservableObject {
         static let useFinderStyleIconColors = "settings.useFinderStyleIconColors"
         static let showPathBar = "settings.showPathBar"
         static let calculateFolderSizes = "settings.calculateFolderSizes"
+        static let showUploadToolbarButton = "settings.showUploadToolbarButton"
+        static let showDownloadToolbarButton = "settings.showDownloadToolbarButton"
+        static let showBatchRenameToolbarButton = "settings.showBatchRenameToolbarButton"
+        static let showCompressToolbarButton = "settings.showCompressToolbarButton"
+        static let showUncompressToolbarButton = "settings.showUncompressToolbarButton"
+        static let showConnectionStatusToolbarButton = "settings.showConnectionStatusToolbarButton"
         static let openPreviewOnDoubleClick = "settings.openPreviewOnDoubleClick"
         static let autoLoadAppDetails = "settings.autoLoadAppDetails"
         static let confirmBeforeUninstallingApps = "settings.confirmBeforeUninstallingApps"
@@ -118,6 +124,35 @@ public final class AppSettings: ObservableObject {
 
     @Published public var calculateFolderSizes: Bool {
         didSet { defaults.set(calculateFolderSizes, forKey: Key.calculateFolderSizes) }
+    }
+
+    @Published public var showUploadToolbarButton: Bool {
+        didSet { defaults.set(showUploadToolbarButton, forKey: Key.showUploadToolbarButton) }
+    }
+
+    @Published public var showDownloadToolbarButton: Bool {
+        didSet { defaults.set(showDownloadToolbarButton, forKey: Key.showDownloadToolbarButton) }
+    }
+
+    @Published public var showBatchRenameToolbarButton: Bool {
+        didSet { defaults.set(showBatchRenameToolbarButton, forKey: Key.showBatchRenameToolbarButton) }
+    }
+
+    @Published public var showCompressToolbarButton: Bool {
+        didSet { defaults.set(showCompressToolbarButton, forKey: Key.showCompressToolbarButton) }
+    }
+
+    @Published public var showUncompressToolbarButton: Bool {
+        didSet { defaults.set(showUncompressToolbarButton, forKey: Key.showUncompressToolbarButton) }
+    }
+
+    @Published public var showConnectionStatusToolbarButton: Bool {
+        didSet {
+            defaults.set(
+                showConnectionStatusToolbarButton,
+                forKey: Key.showConnectionStatusToolbarButton
+            )
+        }
     }
 
     @Published public var openPreviewOnDoubleClick: Bool {
@@ -239,6 +274,18 @@ public final class AppSettings: ObservableObject {
         self.useFinderStyleIconColors = defaults.object(forKey: Key.useFinderStyleIconColors) as? Bool ?? true
         self.showPathBar = defaults.object(forKey: Key.showPathBar) as? Bool ?? true
         self.calculateFolderSizes = defaults.object(forKey: Key.calculateFolderSizes) as? Bool ?? true
+        self.showUploadToolbarButton = defaults.object(forKey: Key.showUploadToolbarButton) as? Bool ?? false
+        self.showDownloadToolbarButton = defaults.object(forKey: Key.showDownloadToolbarButton) as? Bool ?? false
+        self.showBatchRenameToolbarButton = defaults.object(
+            forKey: Key.showBatchRenameToolbarButton
+        ) as? Bool ?? false
+        self.showCompressToolbarButton = defaults.object(forKey: Key.showCompressToolbarButton) as? Bool ?? false
+        self.showUncompressToolbarButton = defaults.object(
+            forKey: Key.showUncompressToolbarButton
+        ) as? Bool ?? false
+        self.showConnectionStatusToolbarButton = defaults.object(
+            forKey: Key.showConnectionStatusToolbarButton
+        ) as? Bool ?? false
         self.openPreviewOnDoubleClick = defaults.object(forKey: Key.openPreviewOnDoubleClick) as? Bool ?? true
         self.autoLoadAppDetails = defaults.object(forKey: Key.autoLoadAppDetails) as? Bool ?? true
         self.confirmBeforeUninstallingApps = defaults.object(forKey: Key.confirmBeforeUninstallingApps) as? Bool ?? true
@@ -293,6 +340,12 @@ public final class AppSettings: ObservableObject {
         useFinderStyleIconColors = true
         showPathBar = true
         calculateFolderSizes = true
+        showUploadToolbarButton = false
+        showDownloadToolbarButton = false
+        showBatchRenameToolbarButton = false
+        showCompressToolbarButton = false
+        showUncompressToolbarButton = false
+        showConnectionStatusToolbarButton = false
         openPreviewOnDoubleClick = true
         autoLoadAppDetails = true
         confirmBeforeUninstallingApps = true
@@ -561,6 +614,65 @@ public struct SettingsView: View {
             .onValueChange(of: settings.calculateFolderSizes) { _, isEnabled in
                 model.folderSizeCalculationSettingDidChange(isEnabled: isEnabled)
             }
+        }
+
+        SettingsSectionCard(title: "Toolbar", symbol: "menubar.rectangle") {
+            SettingsToggleRow(
+                title: "Upload",
+                detail: "Show the button for copying files from this Mac to the connected device.",
+                symbol: "square.and.arrow.up",
+                isOn: $settings.showUploadToolbarButton
+            )
+
+            Divider()
+                .padding(.leading, 48)
+
+            SettingsToggleRow(
+                title: "Download",
+                detail: "Show the button for copying selected files from the device to this Mac.",
+                symbol: "square.and.arrow.down",
+                isOn: $settings.showDownloadToolbarButton
+            )
+
+            Divider()
+                .padding(.leading, 48)
+
+            SettingsToggleRow(
+                title: "Batch Rename",
+                detail: "Show the button for renaming multiple selected files at once.",
+                symbol: "textformat",
+                isOn: $settings.showBatchRenameToolbarButton
+            )
+
+            Divider()
+                .padding(.leading, 48)
+
+            SettingsToggleRow(
+                title: "Compress to ZIP",
+                detail: "Show the button for creating a ZIP archive from selected items.",
+                symbol: "doc.zipper",
+                isOn: $settings.showCompressToolbarButton
+            )
+
+            Divider()
+                .padding(.leading, 48)
+
+            SettingsToggleRow(
+                title: "Uncompress ZIP",
+                detail: "Show the button for extracting the selected archive.",
+                symbol: "archivebox",
+                isOn: $settings.showUncompressToolbarButton
+            )
+
+            Divider()
+                .padding(.leading, 48)
+
+            SettingsToggleRow(
+                title: "Connection Status",
+                detail: "Show the button for Developer Options and File Transfer status.",
+                symbol: "cable.connector",
+                isOn: $settings.showConnectionStatusToolbarButton
+            )
         }
 
         SettingsSectionCard(title: "Favorites", symbol: "sidebar.left") {

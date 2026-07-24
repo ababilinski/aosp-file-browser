@@ -2945,10 +2945,12 @@ private struct QRCodeImage: View {
 
 private struct AppToolbar: ToolbarContent {
     @ObservedObject var model: AppModel
+    @ObservedObject private var settings: AppSettings
     @ObservedObject private var usbTransferManager: USBTransferManager
 
     init(model: AppModel) {
         self.model = model
+        self.settings = model.settings
         self.usbTransferManager = model.usbTransferManager
     }
 
@@ -3014,23 +3016,27 @@ private struct AppToolbar: ToolbarContent {
 
         ToolbarItemGroup(placement: .primaryAction) {
             if model.isUSBTransferSelected {
-                Button {
-                    usbTransferManager.uploadToCurrentMTPFolder()
-                } label: {
-                    Label("Upload", systemImage: "square.and.arrow.up")
+                if settings.showUploadToolbarButton {
+                    Button {
+                        usbTransferManager.uploadToCurrentMTPFolder()
+                    } label: {
+                        Label("Upload", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(!usbTransferManager.canWriteCurrentMTPFolder)
+                    .accessibilityLabel("Upload")
+                    .toolbarHoverHelp("Upload: copy files or folders from this Mac into the current phone folder.")
                 }
-                .disabled(!usbTransferManager.canWriteCurrentMTPFolder)
-                .accessibilityLabel("Upload")
-                .toolbarHoverHelp("Upload: copy files or folders from this Mac into the current phone folder.")
 
-                Button {
-                    usbTransferManager.downloadSelected()
-                } label: {
-                    Label("Download", systemImage: "square.and.arrow.down")
+                if settings.showDownloadToolbarButton {
+                    Button {
+                        usbTransferManager.downloadSelected()
+                    } label: {
+                        Label("Download", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(usbTransferManager.selectedDownloadableItems.isEmpty)
+                    .accessibilityLabel("Download")
+                    .toolbarHoverHelp("Download: copy the selected File Transfer items to this Mac.")
                 }
-                .disabled(usbTransferManager.selectedDownloadableItems.isEmpty)
-                .accessibilityLabel("Download")
-                .toolbarHoverHelp("Download: copy the selected File Transfer items to this Mac.")
 
                 Button {
                     usbTransferManager.requestMTPNewFolder()
@@ -3041,25 +3047,29 @@ private struct AppToolbar: ToolbarContent {
                 .accessibilityLabel("New Folder")
                 .toolbarHoverHelp("New Folder: create a folder in the current phone folder.")
 
-                Button {
-                    usbTransferManager.requestMTPCompressSelected()
-                } label: {
-                    Label("Compress", systemImage: "doc.zipper")
-                }
-                .disabled(!usbTransferManager.canCompressSelectedMTPItems)
-                .accessibilityLabel("Compress")
-                .toolbarHoverHelp("Compress: create a zip archive from the selected files or folders.")
-
-                Button {
-                    if let archive = usbTransferManager.selectedMTPExtractableArchive {
-                        usbTransferManager.confirmAndExtractMTPArchive(archive)
+                if settings.showCompressToolbarButton {
+                    Button {
+                        usbTransferManager.requestMTPCompressSelected()
+                    } label: {
+                        Label("Compress", systemImage: "doc.zipper")
                     }
-                } label: {
-                    Label("Uncompress", systemImage: "archivebox")
+                    .disabled(!usbTransferManager.canCompressSelectedMTPItems)
+                    .accessibilityLabel("Compress")
+                    .toolbarHoverHelp("Compress: create a zip archive from the selected files or folders.")
                 }
-                .disabled(usbTransferManager.selectedMTPExtractableArchive == nil)
-                .accessibilityLabel("Uncompress")
-                .toolbarHoverHelp("Uncompress: extract the selected archive into a folder next to it.")
+
+                if settings.showUncompressToolbarButton {
+                    Button {
+                        if let archive = usbTransferManager.selectedMTPExtractableArchive {
+                            usbTransferManager.confirmAndExtractMTPArchive(archive)
+                        }
+                    } label: {
+                        Label("Uncompress", systemImage: "archivebox")
+                    }
+                    .disabled(usbTransferManager.selectedMTPExtractableArchive == nil)
+                    .accessibilityLabel("Uncompress")
+                    .toolbarHoverHelp("Uncompress: extract the selected archive into a folder next to it.")
+                }
 
                 Button(role: .destructive) {
                     usbTransferManager.deleteSelectedMTPItems()
@@ -3070,34 +3080,40 @@ private struct AppToolbar: ToolbarContent {
                 .accessibilityLabel("Delete Permanently")
                 .toolbarHoverHelp("Delete: permanently remove the selected File Transfer items from the phone.")
             } else if model.hasReadyADBDevice {
-                Button {
-                    model.beginUpload()
-                } label: {
-                    Label("Upload", systemImage: "square.and.arrow.up")
+                if settings.showUploadToolbarButton {
+                    Button {
+                        model.beginUpload()
+                    } label: {
+                        Label("Upload", systemImage: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("Upload")
+                    .accessibilityHint("Upload files from this Mac to the current Android folder.")
+                    .toolbarHoverHelp("Upload: copy files from this Mac into the current Android folder.")
                 }
-                .accessibilityLabel("Upload")
-                .accessibilityHint("Upload files from this Mac to the current Android folder.")
-                .toolbarHoverHelp("Upload: copy files from this Mac into the current Android folder.")
 
-                Button {
-                    Task { await model.downloadSelected() }
-                } label: {
-                    Label("Download", systemImage: "square.and.arrow.down")
+                if settings.showDownloadToolbarButton {
+                    Button {
+                        Task { await model.downloadSelected() }
+                    } label: {
+                        Label("Download", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(model.selectedFiles.isEmpty)
+                    .accessibilityLabel("Download")
+                    .accessibilityHint("Download the selected Android files to this Mac.")
+                    .toolbarHoverHelp("Download: copy the selected Android files to this Mac.")
                 }
-                .disabled(model.selectedFiles.isEmpty)
-                .accessibilityLabel("Download")
-                .accessibilityHint("Download the selected Android files to this Mac.")
-                .toolbarHoverHelp("Download: copy the selected Android files to this Mac.")
 
-                Button {
-                    model.requestBatchRenameSelected()
-                } label: {
-                    Label("Batch Rename", systemImage: "textformat")
+                if settings.showBatchRenameToolbarButton {
+                    Button {
+                        model.requestBatchRenameSelected()
+                    } label: {
+                        Label("Batch Rename", systemImage: "textformat")
+                    }
+                    .disabled(model.selectedFiles.count < 2)
+                    .accessibilityLabel("Batch Rename")
+                    .accessibilityHint("Rename multiple selected Android files.")
+                    .toolbarHoverHelp("Batch Rename: rename selected files with find and replace, numbering, prefixes, suffixes, or extension changes.")
                 }
-                .disabled(model.selectedFiles.count < 2)
-                .accessibilityLabel("Batch Rename")
-                .accessibilityHint("Rename multiple selected Android files.")
-                .toolbarHoverHelp("Batch Rename: rename selected files with find and replace, numbering, prefixes, suffixes, or extension changes.")
 
                 Button {
                     model.requestNewFolder()
@@ -3108,27 +3124,31 @@ private struct AppToolbar: ToolbarContent {
                 .accessibilityHint("Create a new folder in the current Android folder.")
                 .toolbarHoverHelp("New Folder: create a folder in the current Android location.")
 
-                Button {
-                    model.requestCompressSelected()
-                } label: {
-                    Label("Compress", systemImage: "doc.zipper")
-                }
-                .disabled(!model.canCompressSelection)
-                .accessibilityLabel("Compress")
-                .accessibilityHint("Compress the selected Android files into a zip archive.")
-                .toolbarHoverHelp("Compress: create a zip archive from the selected files or folders.")
-
-                Button {
-                    if let archive = model.selectedExtractableArchive {
-                        model.confirmAndExtractArchive(archive)
+                if settings.showCompressToolbarButton {
+                    Button {
+                        model.requestCompressSelected()
+                    } label: {
+                        Label("Compress", systemImage: "doc.zipper")
                     }
-                } label: {
-                    Label("Uncompress", systemImage: "archivebox")
+                    .disabled(!model.canCompressSelection)
+                    .accessibilityLabel("Compress")
+                    .accessibilityHint("Compress the selected Android files into a zip archive.")
+                    .toolbarHoverHelp("Compress: create a zip archive from the selected files or folders.")
                 }
-                .disabled(model.selectedExtractableArchive == nil)
-                .accessibilityLabel("Uncompress")
-                .accessibilityHint("Extract the selected archive into a folder on the Android device.")
-                .toolbarHoverHelp("Uncompress: extract the selected archive into a folder next to it.")
+
+                if settings.showUncompressToolbarButton {
+                    Button {
+                        if let archive = model.selectedExtractableArchive {
+                            model.confirmAndExtractArchive(archive)
+                        }
+                    } label: {
+                        Label("Uncompress", systemImage: "archivebox")
+                    }
+                    .disabled(model.selectedExtractableArchive == nil)
+                    .accessibilityLabel("Uncompress")
+                    .accessibilityHint("Extract the selected archive into a folder on the Android device.")
+                    .toolbarHoverHelp("Uncompress: extract the selected archive into a folder next to it.")
+                }
 
                 Button {
                     Task { await model.deleteSelectedToTrash() }
@@ -3143,26 +3163,42 @@ private struct AppToolbar: ToolbarContent {
         }
 
         ToolbarItemGroup {
-            Button {
-                model.showConnectionStatus()
-            } label: {
-                Label("Connection Status", systemImage: "cable.connector")
+            if settings.showConnectionStatusToolbarButton {
+                Button {
+                    model.showConnectionStatus()
+                } label: {
+                    Label("Connection Status", systemImage: "cable.connector")
+                }
+                .accessibilityLabel("Connection Status")
+                .accessibilityHint("Show Developer Options and File Transfer status.")
+                .toolbarHoverHelp("Connection Status: check both connection methods and see setup help.")
             }
-            .accessibilityLabel("Connection Status")
-            .accessibilityHint("Show Developer Options and File Transfer status.")
-            .toolbarHoverHelp("Connection Status: check both connection methods and see setup help.")
 
             if model.isActiveFileModeSelected {
-                Picker("Layout", selection: $model.browserLayout) {
-                    ForEach(BrowserLayout.allCases) { layout in
-                        Label(layout.label, systemImage: layout.symbol).tag(layout)
+                HStack(spacing: 6) {
+                    Picker("Layout", selection: $model.browserLayout) {
+                        ForEach(BrowserLayout.allCases) { layout in
+                            Label(layout.label, systemImage: layout.symbol).tag(layout)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 112)
+                    .help("View Layout: switch between List and Icons.")
+                    .accessibilityLabel("File Layout")
+                    .accessibilityHint("Switch between list and icon file layouts.")
+
+                    if model.hasInspectableDeviceSurface {
+                        Button {
+                            model.showInspector.toggle()
+                        } label: {
+                            Label("Inspector", systemImage: "sidebar.right")
+                        }
+                        .accessibilityLabel(model.showInspector ? "Hide Inspector" : "Show Inspector")
+                        .accessibilityIdentifier("toolbar-inspector")
+                        .accessibilityHint("Show or hide the details panel on the right side of the window.")
+                        .toolbarHoverHelp(model.showInspector ? "Inspector: hide the details panel on the right." : "Inspector: show details for the selected file, preview, or app.")
                     }
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 112)
-                .help("View Layout: switch between List and Icons.")
-                .accessibilityLabel("File Layout")
-                .accessibilityHint("Switch between list and icon file layouts.")
             }
 
             if model.showsPhoneCaptureToolbarControls {
@@ -3224,17 +3260,6 @@ private struct AppToolbar: ToolbarContent {
                 }
             }
 
-            if model.hasInspectableDeviceSurface {
-                Button {
-                    model.showInspector.toggle()
-                } label: {
-                    Label("Inspector", systemImage: "sidebar.right")
-                }
-                .accessibilityLabel(model.showInspector ? "Hide Inspector" : "Show Inspector")
-                .accessibilityIdentifier("toolbar-inspector")
-                .accessibilityHint("Show or hide the details panel on the right side of the window.")
-                .toolbarHoverHelp(model.showInspector ? "Inspector: hide the details panel on the right." : "Inspector: show details for the selected file, preview, or app.")
-            }
         }
     }
 }
