@@ -124,14 +124,20 @@ final class PhoneCapturePresentationTests: XCTestCase {
         model.selectedDeviceID = device.id
 
         model.sidebarSelection = .apps
+        XCTAssertTrue(model.showsAppManagementToolbarControls)
+        XCTAssertFalse(model.showsNewFolderToolbarControl)
         XCTAssertTrue(model.hasInspectableDeviceSurface)
         XCTAssertFalse(model.canCreateFolderInActiveFileMode)
 
         model.sidebarSelection = .storage("internal")
+        XCTAssertFalse(model.showsAppManagementToolbarControls)
+        XCTAssertFalse(model.showsNewFolderToolbarControl)
         XCTAssertTrue(model.hasInspectableDeviceSurface)
         XCTAssertFalse(model.canCreateFolderInActiveFileMode)
 
         model.sidebarSelection = nil
+        XCTAssertFalse(model.showsAppManagementToolbarControls)
+        XCTAssertTrue(model.showsNewFolderToolbarControl)
         XCTAssertTrue(model.hasInspectableDeviceSurface)
         XCTAssertTrue(model.canCreateFolderInActiveFileMode)
     }

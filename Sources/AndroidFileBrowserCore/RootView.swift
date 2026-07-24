@@ -2994,14 +2994,16 @@ private struct AppToolbar: ToolbarContent {
                 .accessibilityHint("Refresh the files shown through File Transfer.")
                 .toolbarHoverHelp("Refresh: reload the files currently shown by File Transfer.")
             } else {
-                Button {
-                    model.navigateUp()
-                } label: {
-                    Label("Up", systemImage: "chevron.up")
+                if model.isActiveFileModeSelected {
+                    Button {
+                        model.navigateUp()
+                    } label: {
+                        Label("Up", systemImage: "chevron.up")
+                    }
+                    .accessibilityLabel("Go Up")
+                    .accessibilityHint("Go to the parent folder.")
+                    .toolbarHoverHelp("Go Up: open the parent folder.")
                 }
-                .accessibilityLabel("Go Up")
-                .accessibilityHint("Go to the parent folder.")
-                .toolbarHoverHelp("Go Up: open the parent folder.")
 
                 Button {
                     Task { await model.refreshCurrentSurfaceSafely() }
@@ -3070,7 +3072,7 @@ private struct AppToolbar: ToolbarContent {
                 .disabled(!usbTransferManager.canDeleteSelectedMTPItems)
                 .accessibilityLabel("Delete Permanently")
                 .toolbarHoverHelp("Delete: permanently remove the selected File Transfer items from the phone.")
-            } else if model.hasReadyADBDevice {
+            } else if model.isActiveFileModeSelected {
                 if settings.showUploadToolbarButton {
                     Button {
                         model.beginUpload()
@@ -3145,6 +3147,43 @@ private struct AppToolbar: ToolbarContent {
         }
 
         ToolbarItemGroup {
+            if model.showsAppManagementToolbarControls {
+                Button {
+                    model.showAPKImporter = true
+                } label: {
+                    Label("Install Package…", systemImage: "plus.app")
+                }
+                .disabled(model.isAppPackageInstallInProgress)
+                .accessibilityLabel("Install App Package")
+                .accessibilityIdentifier("toolbar-install-app")
+                .accessibilityHint("Choose an Android app package on this Mac and install it on the Android device.")
+                .toolbarHoverHelp("Install Package: choose an APK, XAPK, APKS, or split ZIP on this Mac.")
+
+                Button {
+                    Task { await model.forceStopSelectedPackages() }
+                } label: {
+                    Label("Force Close", systemImage: "xmark.octagon")
+                }
+                .disabled(model.selectedPackageIDs.isEmpty)
+                .accessibilityLabel("Force Close Apps")
+                .accessibilityIdentifier("toolbar-force-close-apps")
+                .accessibilityHint("Stop the selected running apps on the Android device.")
+                .toolbarHoverHelp("Force Close: stop the selected running apps on the Android device.")
+
+                Button(role: .destructive) {
+                    Task { await model.uninstallSelectedPackages() }
+                } label: {
+                    Label("Uninstall", systemImage: "trash")
+                }
+                .disabled(model.selectedPackageIDs.isEmpty)
+                .accessibilityLabel("Uninstall Apps")
+                .accessibilityIdentifier("toolbar-uninstall-apps")
+                .accessibilityHint("Uninstall the selected Android apps.")
+                .toolbarHoverHelp("Uninstall: remove the selected apps from the Android device.")
+            }
+        }
+
+        ToolbarItemGroup {
             if settings.showConnectionStatusToolbarButton {
                 Button {
                     model.showConnectionStatus()
@@ -3174,16 +3213,18 @@ private struct AppToolbar: ToolbarContent {
 
         ToolbarItemGroup {
             if model.hasInspectableDeviceSurface {
-                Button {
-                    model.requestActiveFileModeNewFolder()
-                } label: {
-                    Label("New Folder", systemImage: "folder.badge.plus")
+                if model.showsNewFolderToolbarControl {
+                    Button {
+                        model.requestActiveFileModeNewFolder()
+                    } label: {
+                        Label("New Folder", systemImage: "folder.badge.plus")
+                    }
+                    .disabled(!model.canCreateFolderInActiveFileMode)
+                    .accessibilityLabel("New Folder")
+                    .accessibilityIdentifier("toolbar-new-folder")
+                    .accessibilityHint("Create a folder in the current Android file location.")
+                    .toolbarHoverHelp("New Folder: create a folder in the current Android file location.")
                 }
-                .disabled(!model.canCreateFolderInActiveFileMode)
-                .accessibilityLabel("New Folder")
-                .accessibilityIdentifier("toolbar-new-folder")
-                .accessibilityHint("Create a folder in the current Android file location.")
-                .toolbarHoverHelp("New Folder: create a folder in the current Android file location.")
 
                 Button {
                     model.showInspector.toggle()

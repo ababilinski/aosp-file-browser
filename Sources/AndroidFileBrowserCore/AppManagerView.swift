@@ -22,35 +22,6 @@ struct AppManagerView: View {
                 Spacer()
 
                 InlineSearchField(text: $model.searchText, prompt: "Search")
-
-                Button {
-                    Task { await model.forceStopSelectedPackages() }
-                } label: {
-                    Label("Force Close", systemImage: "xmark.octagon")
-                }
-                .disabled(model.selectedPackageIDs.isEmpty)
-                .help("Force Close: stop the selected running apps on the Android device.")
-                .accessibilityLabel("Force Close Apps")
-
-                Button(role: .destructive) {
-                    Task { await model.uninstallSelectedPackages() }
-                } label: {
-                    Label("Uninstall", systemImage: "trash")
-                }
-                .disabled(model.selectedPackageIDs.isEmpty)
-                .help("Uninstall: remove the selected apps from the Android device.")
-                .accessibilityLabel("Uninstall Apps")
-                .accessibilityHint("Uninstall the selected Android apps.")
-
-                Button {
-                    model.showAPKImporter = true
-                } label: {
-                    Label("Install Package…", systemImage: "plus.app")
-                }
-                .disabled(model.isAppPackageInstallInProgress)
-                .help("Install Package: choose an APK, XAPK, APKS, or split ZIP on this Mac.")
-                .accessibilityLabel("Install App Package")
-                .accessibilityHint("Choose an Android app package on this Mac and install it on the Android device.")
             }
             .padding(14)
 

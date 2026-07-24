@@ -556,6 +556,14 @@ public final class AppModel: ObservableObject {
         isUSBTransferSelected || canUseActiveADBFileCommands
     }
 
+    public var showsAppManagementToolbarControls: Bool {
+        sidebarSelection == .apps && hasReadyADBDevice
+    }
+
+    public var showsNewFolderToolbarControl: Bool {
+        isActiveFileModeSelected
+    }
+
     public var canCreateFolderInActiveFileMode: Bool {
         if isUSBTransferSelected {
             return usbTransferManager.canWriteCurrentMTPFolder
