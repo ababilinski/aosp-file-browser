@@ -84,6 +84,14 @@ struct InlineSearchField: View {
         }
         .controlSize(.large)
         .liquidGlassButton()
+        .background(
+            Color(nsColor: .controlBackgroundColor).opacity(0.82),
+            in: Circle()
+        )
+        .overlay {
+            Circle()
+                .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
+        }
         .help("Search")
         .accessibilityLabel("Search")
         .accessibilityIdentifier("search-button")
@@ -132,6 +140,22 @@ struct InlineSearchField: View {
         .padding(.vertical, 7)
         .frame(width: 300)
         .liquidGlassPanel(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(
+            Color(nsColor: .controlBackgroundColor).opacity(0.82),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(
+                    isFocused ? Color.accentColor : Color.primary.opacity(0.16),
+                    lineWidth: isFocused ? 3 : 1
+                )
+        }
+        .shadow(
+            color: isFocused ? Color.accentColor.opacity(0.28) : .clear,
+            radius: isFocused ? 3 : 0
+        )
+        .animation(.easeOut(duration: 0.14), value: isFocused)
         .onAppear {
             DispatchQueue.main.async {
                 isFocused = true
