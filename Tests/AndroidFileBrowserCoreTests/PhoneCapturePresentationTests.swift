@@ -111,6 +111,37 @@ final class PhoneCapturePresentationTests: XCTestCase {
         XCTAssertTrue(model.showsPhoneCaptureToolbarControls)
     }
 
+    func testInspectorUtilityStaysAvailableInAppsAndStorage() {
+        let model = makeModel()
+        let device = AndroidDevice(
+            serial: "connected",
+            state: .device,
+            model: "Connected Device",
+            product: nil,
+            transport: nil
+        )
+        model.devices = [device]
+        model.selectedDeviceID = device.id
+
+        model.sidebarSelection = .apps
+        XCTAssertTrue(model.showsAppManagementToolbarControls)
+        XCTAssertFalse(model.showsNewFolderToolbarControl)
+        XCTAssertTrue(model.hasInspectableDeviceSurface)
+        XCTAssertFalse(model.canCreateFolderInActiveFileMode)
+
+        model.sidebarSelection = .storage("internal")
+        XCTAssertFalse(model.showsAppManagementToolbarControls)
+        XCTAssertFalse(model.showsNewFolderToolbarControl)
+        XCTAssertTrue(model.hasInspectableDeviceSurface)
+        XCTAssertFalse(model.canCreateFolderInActiveFileMode)
+
+        model.sidebarSelection = nil
+        XCTAssertFalse(model.showsAppManagementToolbarControls)
+        XCTAssertTrue(model.showsNewFolderToolbarControl)
+        XCTAssertTrue(model.hasInspectableDeviceSurface)
+        XCTAssertTrue(model.canCreateFolderInActiveFileMode)
+    }
+
     private func makeModel() -> AppModel {
         let suiteName = "AndroidFileBrowserCoreTests.PhoneCapturePresentation.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

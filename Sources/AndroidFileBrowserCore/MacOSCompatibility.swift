@@ -175,6 +175,126 @@ extension View {
             background(color)
         }
     }
+
+    @ViewBuilder
+    func compatibleToolbarRemovingSidebarToggle() -> some View {
+        if #available(macOS 14, *) {
+            toolbar(removing: .sidebarToggle)
+                .background(SidebarToggleRemover())
+        } else {
+            background(SidebarToggleRemover())
+        }
+    }
+}
+
+private struct SidebarToggleRemover: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        SidebarToggleRemovalView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let removalView = nsView as? SidebarToggleRemovalView else { return }
+        removalView.installRemovalController()
+    }
+}
+
+private final class SidebarToggleRemovalView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        installRemovalController()
+    }
+
+    func installRemovalController() {
+        guard let toolbar = window?.toolbar else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil else { return }
+                self.installRemovalController()
+            }
+            return
+        }
+        SidebarToggleRemovalRegistry.shared.install(on: toolbar)
+    }
+}
+
+enum SidebarToggleIdentifierPolicy {
+    static let swiftUISidebarToggle = NSToolbarItem.Identifier(
+        "com.apple.SwiftUI.navigationSplitView.toggleSidebar"
+    )
+
+    static func shouldRemove(_ identifier: NSToolbarItem.Identifier) -> Bool {
+        identifier == .toggleSidebar || identifier == swiftUISidebarToggle
+    }
+}
+
+@MainActor
+private final class SidebarToggleRemovalRegistry {
+    static let shared = SidebarToggleRemovalRegistry()
+
+    private let controllers = NSMapTable<NSToolbar, SidebarToggleRemovalController>(
+        keyOptions: .weakMemory,
+        valueOptions: .strongMemory
+    )
+
+    func install(on toolbar: NSToolbar) {
+        if let controller = controllers.object(forKey: toolbar) {
+            controller.removeSidebarToggles()
+            return
+        }
+
+        let controller = SidebarToggleRemovalController(toolbar: toolbar)
+        controllers.setObject(controller, forKey: toolbar)
+    }
+}
+
+@MainActor
+private final class SidebarToggleRemovalController: NSObject {
+    private weak var toolbar: NSToolbar?
+    private var removalScheduled = false
+
+    init(toolbar: NSToolbar) {
+        self.toolbar = toolbar
+        super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(toolbarWillAddItem),
+            name: NSToolbar.willAddItemNotification,
+            object: toolbar
+        )
+        removeSidebarToggles()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    func removeSidebarToggles() {
+        guard let toolbar else { return }
+        let indexes = toolbar.items.indices.filter { index in
+            SidebarToggleIdentifierPolicy.shouldRemove(toolbar.items[index].itemIdentifier)
+        }
+        for index in indexes.reversed() {
+            toolbar.removeItem(at: index)
+        }
+    }
+
+    @objc private func toolbarWillAddItem(_ notification: Notification) {
+        guard let item = notification.userInfo?["item"] as? NSToolbarItem,
+              SidebarToggleIdentifierPolicy.shouldRemove(item.itemIdentifier)
+        else { return }
+
+        item.isEnabled = false
+        if #available(macOS 15, *) {
+            item.isHidden = true
+        }
+
+        guard !removalScheduled else { return }
+        removalScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.removalScheduled = false
+            self.removeSidebarToggles()
+        }
+    }
 }
 
 @available(macOS, introduced: 10.15, obsoleted: 14)

@@ -32,6 +32,42 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(AppSettings(defaults: defaults).calculateFolderSizes)
     }
 
+    func testOptionalToolbarButtonsDefaultOffPersistAndReset() {
+        let defaults = makeDefaults()
+        let settings = AppSettings(defaults: defaults)
+
+        XCTAssertFalse(settings.showUploadToolbarButton)
+        XCTAssertFalse(settings.showDownloadToolbarButton)
+        XCTAssertFalse(settings.showBatchRenameToolbarButton)
+        XCTAssertFalse(settings.showCompressToolbarButton)
+        XCTAssertFalse(settings.showUncompressToolbarButton)
+        XCTAssertFalse(settings.showConnectionStatusToolbarButton)
+
+        settings.showUploadToolbarButton = true
+        settings.showDownloadToolbarButton = true
+        settings.showBatchRenameToolbarButton = true
+        settings.showCompressToolbarButton = true
+        settings.showUncompressToolbarButton = true
+        settings.showConnectionStatusToolbarButton = true
+
+        let reloaded = AppSettings(defaults: defaults)
+        XCTAssertTrue(reloaded.showUploadToolbarButton)
+        XCTAssertTrue(reloaded.showDownloadToolbarButton)
+        XCTAssertTrue(reloaded.showBatchRenameToolbarButton)
+        XCTAssertTrue(reloaded.showCompressToolbarButton)
+        XCTAssertTrue(reloaded.showUncompressToolbarButton)
+        XCTAssertTrue(reloaded.showConnectionStatusToolbarButton)
+
+        settings.reset()
+
+        XCTAssertFalse(settings.showUploadToolbarButton)
+        XCTAssertFalse(settings.showDownloadToolbarButton)
+        XCTAssertFalse(settings.showBatchRenameToolbarButton)
+        XCTAssertFalse(settings.showCompressToolbarButton)
+        XCTAssertFalse(settings.showUncompressToolbarButton)
+        XCTAssertFalse(settings.showConnectionStatusToolbarButton)
+    }
+
     func testResetRestoresConnectionModeLaunchCheck() {
         let defaults = makeDefaults()
         let settings = AppSettings(defaults: defaults)

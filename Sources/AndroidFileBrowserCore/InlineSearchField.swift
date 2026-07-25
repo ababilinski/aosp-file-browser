@@ -4,6 +4,9 @@ struct InlineSearchField: View {
     @Binding var text: String
     let prompt: String
     private let kindFilter: Binding<FileSearchKindFilter>?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isExpanded: Bool
+    @State private var expansionProgress: CGFloat = 1
     @State private var isSuggestionPopoverPresented = false
     @State private var suppressSuggestions = false
     @FocusState private var isFocused: Bool
@@ -12,35 +15,89 @@ struct InlineSearchField: View {
         self._text = text
         self.prompt = prompt
         self.kindFilter = nil
+        self._isExpanded = State(initialValue: !text.wrappedValue.isEmpty)
     }
 
     init(text: Binding<String>, prompt: String, kindFilter: Binding<FileSearchKindFilter>) {
         self._text = text
         self.prompt = prompt
         self.kindFilter = kindFilter
+        self._isExpanded = State(
+            initialValue: !text.wrappedValue.isEmpty || kindFilter.wrappedValue != .any
+        )
     }
 
     var body: some View {
-        searchControl
-            .popover(
-                isPresented: $isSuggestionPopoverPresented,
-                attachmentAnchor: .rect(.bounds),
-                arrowEdge: .top
-            ) {
-                SearchSuggestionPanel(
-                    query: trimmedText,
-                    kindSuggestions: kindSuggestions,
-                    selectNameSearch: selectNameSearch,
-                    selectKind: selectKind
-                )
-                .compatiblePresentationBackground(Color(nsColor: .windowBackgroundColor))
+        ZStack(alignment: .trailing) {
+            if isExpanded {
+                searchControl
+                    .scaleEffect(
+                        x: reduceMotion ? 1 : expansionProgress,
+                        y: 1,
+                        anchor: .trailing
+                    )
+                    .opacity(reduceMotion ? 1 : expansionProgress)
+            } else {
+                searchButton
             }
-            .frame(width: 300)
-            .onValueChange(of: isFocused) { _, focused in
-                if focused {
-                    updateSuggestionPresentation()
-                }
+        }
+        .frame(width: isExpanded ? 300 : 36, alignment: .trailing)
+        .popover(
+            isPresented: $isSuggestionPopoverPresented,
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .top
+        ) {
+            SearchSuggestionPanel(
+                query: trimmedText,
+                kindSuggestions: kindSuggestions,
+                selectNameSearch: selectNameSearch,
+                selectKind: selectKind
+            )
+            .compatiblePresentationBackground(Color(nsColor: .windowBackgroundColor))
+        }
+        .onValueChange(of: isFocused) { _, focused in
+            if focused {
+                updateSuggestionPresentation()
+            } else if !hasActiveSearch {
+                collapseSearch()
             }
+        }
+        .onValueChange(of: activeKindFilter) { _, _ in
+            if hasActiveSearch {
+                expandSearch()
+            } else if !isFocused {
+                collapseSearch()
+            }
+        }
+    }
+
+    private var searchButton: some View {
+        Button {
+            expandSearch()
+        } label: {
+            Label {
+                Text("Search")
+            } icon: {
+                Image(systemName: "magnifyingglass")
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(.primary)
+            }
+            .labelStyle(.iconOnly)
+            .frame(width: 20, height: 20)
+        }
+        .controlSize(.large)
+        .liquidGlassButton()
+        .background(
+            Color(nsColor: .controlBackgroundColor).opacity(0.82),
+            in: Circle()
+        )
+        .overlay {
+            Circle()
+                .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
+        }
+        .help("Search")
+        .accessibilityLabel("Search")
+        .accessibilityIdentifier("search-button")
     }
 
     private var searchControl: some View {
@@ -56,15 +113,22 @@ struct InlineSearchField: View {
                 .textFieldStyle(.plain)
                 .lineLimit(1)
                 .focused($isFocused)
+                .accessibilityIdentifier("search-field")
                 .onValueChange(of: text) { _, _ in
                     suppressSuggestions = false
                     updateSuggestionPresentation()
                 }
+                .onExitCommand {
+                    if hasActiveSearch {
+                        clearAndCollapseSearch()
+                    } else {
+                        collapseSearch()
+                    }
+                }
 
             if hasActiveSearch {
                 Button {
-                    kindFilter?.wrappedValue = .any
-                    text = ""
+                    clearAndCollapseSearch()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -78,10 +142,31 @@ struct InlineSearchField: View {
         .padding(.vertical, 7)
         .frame(width: 300)
         .liquidGlassPanel(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .onTapGesture {
-            if !trimmedText.isEmpty {
-                suppressSuggestions = false
+        .background(
+            Color(nsColor: .controlBackgroundColor).opacity(0.82),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(
+                    isFocused ? Color.accentColor : Color.primary.opacity(0.16),
+                    lineWidth: isFocused ? 3 : 1
+                )
+        }
+        .shadow(
+            color: isFocused ? Color.accentColor.opacity(0.28) : .clear,
+            radius: isFocused ? 3 : 0
+        )
+        .animation(.easeOut(duration: 0.14), value: isFocused)
+        .onAppear {
+            DispatchQueue.main.async {
                 isFocused = true
+            }
+        }
+        .onTapGesture {
+            suppressSuggestions = false
+            isFocused = true
+            if !trimmedText.isEmpty {
                 updateSuggestionPresentation()
             }
         }
@@ -113,6 +198,45 @@ struct InlineSearchField: View {
             && !suppressSuggestions
             && !trimmedText.isEmpty
             && isFocused
+    }
+
+    private func clearAndCollapseSearch() {
+        kindFilter?.wrappedValue = .any
+        text = ""
+        suppressSuggestions = true
+        isSuggestionPopoverPresented = false
+        isFocused = false
+        collapseSearch()
+    }
+
+    private func expandSearch() {
+        guard !isExpanded else { return }
+
+        expansionProgress = reduceMotion ? 1 : 0.12
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isExpanded = true
+        }
+
+        guard !reduceMotion else { return }
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.13)) {
+                expansionProgress = 1
+            }
+        }
+    }
+
+    private func collapseSearch() {
+        guard !hasActiveSearch else { return }
+        suppressSuggestions = true
+        isSuggestionPopoverPresented = false
+        expansionProgress = 1
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isExpanded = false
+        }
     }
 
     private func selectNameSearch() {

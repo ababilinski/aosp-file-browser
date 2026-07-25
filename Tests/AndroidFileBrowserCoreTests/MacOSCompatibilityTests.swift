@@ -1,7 +1,29 @@
+import AppKit
 import XCTest
 @testable import AndroidFileBrowserCore
 
 final class MacOSCompatibilityTests: XCTestCase {
+    func testSidebarTogglePolicyRemovesSystemAndSwiftUIIdentifiers() {
+        XCTAssertTrue(
+            SidebarToggleIdentifierPolicy.shouldRemove(.toggleSidebar)
+        )
+        XCTAssertTrue(
+            SidebarToggleIdentifierPolicy.shouldRemove(
+                NSToolbarItem.Identifier(
+                    "com.apple.SwiftUI.navigationSplitView.toggleSidebar"
+                )
+            )
+        )
+    }
+
+    func testSidebarTogglePolicyKeepsApplicationToolbarItems() {
+        XCTAssertFalse(
+            SidebarToggleIdentifierPolicy.shouldRemove(
+                NSToolbarItem.Identifier("toolbar-inspector")
+            )
+        )
+    }
+
     func testScrollResolverChoosesItemNearestTopFromAbove() {
         let result = CompatibleScrollPositionResolver.topVisiblePosition(
             in: ["previous": -48, "visible": -4, "next": 32]
