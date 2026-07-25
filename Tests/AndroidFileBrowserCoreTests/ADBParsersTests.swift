@@ -23,7 +23,7 @@ final class ADBParsersTests: XCTestCase {
     func testParseDevices() {
         let output = """
         List of devices attached
-        1234567890abcdef device product:oriole model:Pixel_6 device:oriole transport_id:4
+        1234567890abcdef device usb:1-2 product:oriole model:Pixel_6 device:oriole transport_id:4
         emulator-5554 unauthorized
         """
 
@@ -33,7 +33,46 @@ final class ADBParsersTests: XCTestCase {
         XCTAssertEqual(devices[0].serial, "1234567890abcdef")
         XCTAssertEqual(devices[0].state, .device)
         XCTAssertEqual(devices[0].model, "Pixel_6")
+        XCTAssertEqual(devices[0].usbLocation, "1-2")
+        XCTAssertEqual(devices[0].connectionKind, .usb)
+        XCTAssertEqual(devices[1].connectionKind, .virtual)
         XCTAssertEqual(devices[1].state, .unauthorized)
+    }
+
+    func testDetectsNetworkADBConnections() {
+        let direct = AndroidDevice(
+            serial: "192.168.1.42:5555",
+            state: .device,
+            model: "Pixel",
+            product: nil,
+            transport: "7"
+        )
+        let paired = AndroidDevice(
+            serial: "adb-ABC123-r4Nd0m._adb-tls-connect._tcp",
+            state: .device,
+            model: "Pixel",
+            product: nil,
+            transport: "8"
+        )
+
+        XCTAssertEqual(direct.connectionKind, .wifi)
+        XCTAssertEqual(paired.connectionKind, .wifi)
+    }
+
+    func testParseWirelessIPv4AddressFromRouteOrInterface() {
+        XCTAssertEqual(
+            ADBParsers.parseWirelessIPv4Address(
+                "1.1.1.1 via 192.168.1.1 dev wlan0 src 192.168.1.42 uid 2000"
+            ),
+            "192.168.1.42"
+        )
+        XCTAssertEqual(
+            ADBParsers.parseWirelessIPv4Address(
+                "12: wlan0 inet 10.0.0.18/24 brd 10.0.0.255 scope global wlan0"
+            ),
+            "10.0.0.18"
+        )
+        XCTAssertNil(ADBParsers.parseWirelessIPv4Address("lo inet 127.0.0.1/8"))
     }
 
     func testParseLongListing() {

@@ -245,6 +245,8 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var prefetchingStorageCategoryIDs = Set<StorageCategoryFileList.ID>()
     @Published public private(set) var isPrefetchingStorageCategories = false
     @Published public private(set) var batteryStatuses: [AndroidDevice.ID: BatteryStatus] = [:]
+    @Published public private(set) var wirelessADBSetupStates: [AndroidDevice.ID: ADBWirelessSetupState] = [:]
+    @Published public var wirelessADBSetupPresentation: ADBWirelessSetupPresentation?
     @Published public var pendingRename: AndroidFile?
     @Published public var inlineRenameFileID: AndroidFile.ID?
     @Published var pendingBatchRenameRequest: BatchRenameRequest?
@@ -339,6 +341,9 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var loadingTreePaths = Set<String>()
     private var adbDiscovery: ADBDiscovery?
     private var adbQRPairingTask: Task<Void, Never>?
+    private var wirelessADBPreflightTask: Task<Void, Never>?
+    private var pendingSecureWirelessPairingAfterSetupDismissal = false
+    private var wirelessADBSetupTasks: [AndroidDevice.ID: Task<Void, Never>] = [:]
     private var adbQRPairedHost: String?
     private var pendingToolSetupAfterQR: (tool: ToolchainTool, issue: String?)?
     private var suppressedToolSetup = Set<ToolchainTool>()
@@ -1410,6 +1415,213 @@ public final class AppModel: ObservableObject {
         loadSelectedADBDeviceInBackground()
     }
 
+    public func requestWirelessADBSetup(for deviceID: AndroidDevice.ID) {
+        guard let device = devices.first(where: { $0.id == deviceID }),
+              device.state == .device,
+              device.connectionKind == .usb else {
+            statusMessage = "Connect and authorize this device over USB first."
+            return
+        }
+
+        wirelessADBPreflightTask?.cancel()
+        pendingSecureWirelessPairingAfterSetupDismissal = false
+        wirelessADBSetupPresentation = ADBWirelessSetupPresentation(
+            deviceID: device.id,
+            deviceName: device.title,
+            phase: .checking
+        )
+        wirelessADBPreflightTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.wirelessADBPreflightTask = nil }
+            do {
+                let status = try await self.deviceManager.wirelessDebuggingStatus(device: device)
+                guard self.wirelessADBSetupPresentation?.deviceID == device.id else { return }
+                switch status {
+                case .enabled:
+                    self.wirelessADBSetupPresentation?.phase = .wirelessDebuggingEnabled
+                case .disabled:
+                    self.wirelessADBSetupPresentation?.phase = .needsWirelessDebugging
+                case .unsupported:
+                    self.wirelessADBSetupPresentation?.phase = .wirelessDebuggingUnsupported
+                case .unavailable:
+                    self.wirelessADBSetupPresentation?.phase = .readyToConnect(
+                        verificationUnavailable: true
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.wirelessADBSetupPresentation?.deviceID == device.id else { return }
+                self.wirelessADBSetupPresentation?.phase = .readyToConnect(
+                    verificationUnavailable: true
+                )
+            }
+        }
+    }
+
+    public func retryWirelessADBPreflight() {
+        guard let deviceID = wirelessADBSetupPresentation?.deviceID else { return }
+        requestWirelessADBSetup(for: deviceID)
+    }
+
+    public func requestWirelessDebuggingEnablement() {
+        guard wirelessADBSetupPresentation?.phase == .needsWirelessDebugging else { return }
+        wirelessADBSetupPresentation?.phase = .confirmWirelessDebuggingEnable
+    }
+
+    public func cancelWirelessDebuggingEnablement() {
+        guard wirelessADBSetupPresentation?.phase == .confirmWirelessDebuggingEnable else { return }
+        wirelessADBSetupPresentation?.phase = .needsWirelessDebugging
+    }
+
+    public func confirmWirelessDebuggingEnablement() {
+        guard let presentation = wirelessADBSetupPresentation,
+              presentation.phase == .confirmWirelessDebuggingEnable else {
+            return
+        }
+        guard let device = devices.first(where: { $0.id == presentation.deviceID }),
+              device.state == .device,
+              device.connectionKind == .usb else {
+            wirelessADBSetupPresentation?.phase = .wirelessDebuggingEnableFailed(
+                message: "The USB device disconnected before Wireless debugging could be changed. Reconnect and authorize it, then try again."
+            )
+            return
+        }
+
+        wirelessADBPreflightTask?.cancel()
+        wirelessADBSetupPresentation?.phase = .enablingWirelessDebugging
+        wirelessADBPreflightTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.wirelessADBPreflightTask = nil }
+            do {
+                let status = try await self.deviceManager.requestWirelessDebuggingEnablement(
+                    device: device
+                )
+                guard self.wirelessADBSetupPresentation?.deviceID == device.id else { return }
+                switch status {
+                case .enabled:
+                    self.wirelessADBSetupPresentation?.phase = .wirelessDebuggingEnabled
+                case .disabled:
+                    self.wirelessADBSetupPresentation?.phase = .wirelessDebuggingApprovalRequired
+                case .unsupported:
+                    self.wirelessADBSetupPresentation?.phase = .wirelessDebuggingUnsupported
+                case .unavailable:
+                    self.wirelessADBSetupPresentation?.phase = .wirelessDebuggingEnableFailed(
+                        message: "Android accepted the command, but did not report whether Wireless debugging is enabled."
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.wirelessADBSetupPresentation?.deviceID == device.id else { return }
+                self.wirelessADBSetupPresentation?.phase = .wirelessDebuggingEnableFailed(
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    public func retryWirelessDebuggingEnablement() {
+        guard let presentation = wirelessADBSetupPresentation else { return }
+        switch presentation.phase {
+        case .wirelessDebuggingApprovalRequired:
+            requestWirelessADBSetup(for: presentation.deviceID)
+        case .wirelessDebuggingEnableFailed:
+            wirelessADBSetupPresentation?.phase = .confirmWirelessDebuggingEnable
+        default:
+            return
+        }
+    }
+
+    public func startSecureWirelessPairingFromSetup() {
+        guard wirelessADBSetupPresentation?.phase == .wirelessDebuggingEnabled else { return }
+        pendingSecureWirelessPairingAfterSetupDismissal = true
+        dismissWirelessADBSetup()
+    }
+
+    public func confirmWirelessADBSetup() {
+        guard let presentation = wirelessADBSetupPresentation else { return }
+        switch presentation.phase {
+        case .readyToConnect,
+             .needsWirelessDebugging,
+             .wirelessDebuggingUnsupported,
+             .wirelessDebuggingEnabled:
+            break
+        case .checking,
+             .confirmWirelessDebuggingEnable,
+             .enablingWirelessDebugging,
+             .wirelessDebuggingApprovalRequired,
+             .wirelessDebuggingEnableFailed,
+             .connecting,
+             .connected,
+             .failed:
+            return
+        }
+        let deviceID = presentation.deviceID
+        startWirelessADBSetup(for: deviceID)
+    }
+
+    public func dismissWirelessADBSetup() {
+        wirelessADBPreflightTask?.cancel()
+        wirelessADBPreflightTask = nil
+        wirelessADBSetupPresentation = nil
+    }
+
+    public func wirelessADBSetupSheetDidDismiss() {
+        wirelessADBPreflightTask?.cancel()
+        wirelessADBPreflightTask = nil
+        guard pendingSecureWirelessPairingAfterSetupDismissal else { return }
+        pendingSecureWirelessPairingAfterSetupDismissal = false
+        startADBQRPairing()
+    }
+
+    private func startWirelessADBSetup(for deviceID: AndroidDevice.ID) {
+        guard let device = devices.first(where: { $0.id == deviceID }) else {
+            let message = "The USB device disconnected before the handoff could start. Reconnect and authorize it, then try again."
+            wirelessADBSetupPresentation?.phase = .failed(message: message)
+            statusMessage = "Reconnect the USB device before using the Wi-Fi handoff."
+            return
+        }
+        guard device.state == .device, device.connectionKind == .usb else {
+            let message = "The device is no longer connected and authorized over USB. Reconnect it, then try the handoff again."
+            wirelessADBSetupPresentation?.phase = .failed(message: message)
+            statusMessage = "Connect and authorize this device over USB first."
+            return
+        }
+        guard wirelessADBSetupTasks[deviceID] == nil else { return }
+
+        wirelessADBSetupStates[deviceID] = .preparing
+        wirelessADBSetupPresentation?.phase = .connecting
+        statusMessage = "Preparing \(device.title) for Wi-Fi…"
+        wirelessADBSetupTasks[deviceID] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.wirelessADBSetupTasks[deviceID] = nil }
+
+            do {
+                let endpoint = try await self.deviceManager.enableWirelessADB(device: device)
+                self.wirelessADBSetupStates[deviceID] = .ready(endpoint: endpoint)
+                let found = try await self.deviceManager.devices()
+                _ = self.applyADBDeviceSnapshot(found)
+                if found.contains(where: { $0.id == endpoint && $0.state == .device }) {
+                    self.selectADBDevice(id: endpoint)
+                }
+                if self.wirelessADBSetupPresentation?.deviceID == device.id {
+                    self.wirelessADBSetupPresentation?.phase = .connected(endpoint: endpoint)
+                }
+                self.statusMessage = "\(device.title) is connected over Wi-Fi. You can unplug the cable."
+            } catch is CancellationError {
+                return
+            } catch {
+                let message = error.localizedDescription
+                self.wirelessADBSetupStates[deviceID] = .failed(message: message)
+                if self.wirelessADBSetupPresentation?.deviceID == device.id {
+                    self.wirelessADBSetupPresentation?.phase = .failed(message: message)
+                }
+                self.statusMessage = "Couldn’t enable Wi-Fi for \(device.title)."
+            }
+        }
+    }
+
     private func loadSelectedADBDeviceInBackground() {
         guard let deviceID = selectedDeviceID,
               selectedDevice?.state == .device else { return }
@@ -1466,7 +1678,7 @@ public final class AppModel: ObservableObject {
                     prepareADBReadySurfaceForTransition()
                 }
                 try await refreshStorage()
-                await refreshBatteryStatus()
+                await refreshConnectedADBBatteryStatuses()
                 if connectionMode == .adb {
                     try await refreshCurrentSurface()
                 }
@@ -1511,11 +1723,9 @@ public final class AppModel: ObservableObject {
                     prepareADBReadySurfaceForTransition()
                 }
                 loadSelectedADBDeviceInBackground()
-            } else if !wasBusy, selectedDevice?.state == .device {
-                await refreshBatteryStatus()
             }
             if !wasBusy {
-                await refreshPhoneControlBatteryStatuses()
+                await refreshConnectedADBBatteryStatuses()
             }
 
             if !wasBusy || selectedDeviceChanged || found.isEmpty {
@@ -7306,9 +7516,8 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    private func refreshPhoneControlBatteryStatuses() async {
-        let activeSerials = Set(phoneControlSessions.map(\.deviceSerial))
-        for device in devices where activeSerials.contains(device.serial) && device.id != selectedDevice?.id {
+    private func refreshConnectedADBBatteryStatuses() async {
+        for device in devices where device.state == .device {
             await refreshBatteryStatus(for: device)
         }
     }
@@ -7320,6 +7529,15 @@ public final class AppModel: ObservableObject {
         devices = found
         let foundDeviceIDs = Set(found.map(\.id))
         batteryStatuses = batteryStatuses.filter { foundDeviceIDs.contains($0.key) }
+        wirelessADBSetupStates = wirelessADBSetupStates.filter { deviceID, state in
+            if foundDeviceIDs.contains(deviceID) || wirelessADBSetupTasks[deviceID] != nil {
+                return true
+            }
+            if case .ready(let endpoint) = state {
+                return foundDeviceIDs.contains(endpoint)
+            }
+            return false
+        }
 
         let selectedDeviceIsReady = found.first { $0.id == selectedDeviceID }?.state == .device
         if selectedDeviceID == nil
@@ -7455,6 +7673,12 @@ public final class AppModel: ObservableObject {
         for task in cancellableReadTasks.values {
             task.cancel()
         }
+        for task in wirelessADBSetupTasks.values {
+            task.cancel()
+        }
+        wirelessADBSetupTasks.removeAll()
+        wirelessADBPreflightTask?.cancel()
+        wirelessADBPreflightTask = nil
         searchTask?.cancel()
         searchTask = nil
         cacheMaintenanceTask?.cancel()

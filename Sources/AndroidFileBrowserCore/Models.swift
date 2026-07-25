@@ -24,6 +24,23 @@ public struct AndroidDevice: Identifiable, Hashable, Codable, Sendable {
     public let model: String?
     public let product: String?
     public let transport: String?
+    public let usbLocation: String?
+
+    public init(
+        serial: String,
+        state: DeviceState,
+        model: String?,
+        product: String?,
+        transport: String?,
+        usbLocation: String? = nil
+    ) {
+        self.serial = serial
+        self.state = state
+        self.model = model
+        self.product = product
+        self.transport = transport
+        self.usbLocation = usbLocation
+    }
 
     public var title: String {
         model?.replacingOccurrences(of: "_", with: " ") ?? serial
@@ -31,6 +48,91 @@ public struct AndroidDevice: Identifiable, Hashable, Codable, Sendable {
 
     public var subtitle: String {
         [serial, product, transport].compactMap { $0 }.joined(separator: " • ")
+    }
+
+    public var connectionKind: ADBConnectionKind {
+        if serial.hasPrefix("emulator-") {
+            return .virtual
+        }
+        if serial.contains(":") || serial.contains("._adb-tls-connect._tcp") {
+            return .wifi
+        }
+        return .usb
+    }
+}
+
+public enum ADBConnectionKind: String, Codable, Sendable {
+    case usb
+    case wifi
+    case virtual
+
+    public var label: String {
+        switch self {
+        case .usb: "USB"
+        case .wifi: "Wi-Fi"
+        case .virtual: "Virtual"
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .usb: "cable.connector"
+        case .wifi: "wifi"
+        case .virtual: "desktopcomputer"
+        }
+    }
+}
+
+public enum ADBWirelessSetupState: Equatable, Sendable {
+    case preparing
+    case ready(endpoint: String)
+    case failed(message: String)
+
+    public var detail: String {
+        switch self {
+        case .preparing:
+            "Preparing Wi-Fi…"
+        case .ready:
+            "Wi-Fi ready · Unplug cable"
+        case .failed:
+            "Wi-Fi setup failed"
+        }
+    }
+}
+
+public enum ADBWirelessDebuggingStatus: Equatable, Sendable {
+    case enabled
+    case disabled
+    case unsupported
+    case unavailable
+}
+
+public struct ADBWirelessSetupPresentation: Identifiable, Equatable, Sendable {
+    public enum Phase: Equatable, Sendable {
+        case checking
+        case readyToConnect(verificationUnavailable: Bool)
+        case needsWirelessDebugging
+        case wirelessDebuggingUnsupported
+        case confirmWirelessDebuggingEnable
+        case enablingWirelessDebugging
+        case wirelessDebuggingEnabled
+        case wirelessDebuggingApprovalRequired
+        case wirelessDebuggingEnableFailed(message: String)
+        case connecting
+        case connected(endpoint: String)
+        case failed(message: String)
+    }
+
+    public let deviceID: AndroidDevice.ID
+    public let deviceName: String
+    public var phase: Phase
+
+    public var id: AndroidDevice.ID { deviceID }
+
+    public init(deviceID: AndroidDevice.ID, deviceName: String, phase: Phase) {
+        self.deviceID = deviceID
+        self.deviceName = deviceName
+        self.phase = phase
     }
 }
 
