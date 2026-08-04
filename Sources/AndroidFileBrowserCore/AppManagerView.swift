@@ -3,6 +3,7 @@ import SwiftUI
 
 struct AppManagerView: View {
     @ObservedObject var model: AppModel
+    let onBlankSpaceDeselection: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,7 +29,7 @@ struct AppManagerView: View {
             Divider()
 
             ZStack {
-                AppPackageList(model: model)
+                AppPackageList(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
 
                 if model.isLoadingApps {
                     AppLoadingView(hasPackages: !model.packages.isEmpty)
@@ -251,6 +252,7 @@ struct AppLoadingView: View {
 struct AppPackageList: View {
     @ObservedObject var model: AppModel
     var showsStorageDisclosure = false
+    let onBlankSpaceDeselection: () -> Void
     @State private var columnWidths: [AppColumn: CGFloat] = [:]
     @State private var resizeStartWidths: [AppColumn: CGFloat]?
 
@@ -280,25 +282,33 @@ struct AppPackageList: View {
                     }
                     Divider()
                     ScrollView(.vertical) {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(model.filteredPackages) { package in
-                                AppPackageRow(
-                                    model: model,
-                                    package: package,
-                                    columns: layout.columns,
-                                    layout: layout,
-                                    showsStorageDisclosure: showsStorageDisclosure
-                                )
-                                if showsStorageDisclosure && model.expandedStorageAppPackageIDs.contains(package.id) {
-                                    StorageAppPackageExpansionView(model: model, package: package)
+                        ZStack(alignment: .topLeading) {
+                            AppPackageBackgroundSurface(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
+                                .frame(width: layout.totalWidth)
+                                .frame(minHeight: max(proxy.size.height - 34, 0))
+
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(model.filteredPackages) { package in
+                                    AppPackageRow(
+                                        model: model,
+                                        package: package,
+                                        columns: layout.columns,
+                                        layout: layout,
+                                        showsStorageDisclosure: showsStorageDisclosure
+                                    )
+                                    if showsStorageDisclosure && model.expandedStorageAppPackageIDs.contains(package.id) {
+                                        StorageAppPackageExpansionView(model: model, package: package)
+                                            .padding(.leading, 44)
+                                            .padding(.trailing, 12)
+                                            .padding(.vertical, 8)
+                                    }
+                                    Divider()
                                         .padding(.leading, 44)
-                                        .padding(.trailing, 12)
-                                        .padding(.vertical, 8)
                                 }
-                                Divider()
-                                    .padding(.leading, 44)
                             }
                         }
+                        .frame(width: layout.totalWidth, alignment: .leading)
+                        .frame(minHeight: max(proxy.size.height - 34, 0), alignment: .top)
                     }
                 }
                 .frame(width: layout.totalWidth, height: proxy.size.height, alignment: .topLeading)
@@ -325,6 +335,21 @@ struct AppPackageList: View {
         let clampedTranslation = min(max(translation, currentMinimum - currentStart), nextStart - nextMinimum)
         columnWidths[column] = currentStart + clampedTranslation
         columnWidths[nextColumn] = nextStart - clampedTranslation
+    }
+}
+
+private struct AppPackageBackgroundSurface: View {
+    @ObservedObject var model: AppModel
+    let onBlankSpaceDeselection: () -> Void
+
+    var body: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onTapGesture {
+                model.clearAppSelection()
+                onBlankSpaceDeselection()
+            }
+            .accessibilityIdentifier("app-package-background")
     }
 }
 

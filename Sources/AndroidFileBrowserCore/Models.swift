@@ -344,6 +344,97 @@ public enum BrowserLayout: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+struct InspectorLayoutPolicy {
+    static let inspectorMinimumWidth: CGFloat = 320
+    static let inspectorPreferredWidth: CGFloat = 380
+    static let dividerWidth: CGFloat = 1
+
+    static func shouldAutoHideInspector(
+        availableWidth: CGFloat,
+        minimumMainContentWidth: CGFloat,
+        inspectorWidth: CGFloat = inspectorPreferredWidth
+    ) -> Bool {
+        guard availableWidth.isFinite,
+              minimumMainContentWidth.isFinite,
+              inspectorWidth.isFinite,
+              availableWidth > 0,
+              minimumMainContentWidth > 0,
+              inspectorWidth > 0 else {
+            return false
+        }
+        return availableWidth - inspectorWidth - dividerWidth < minimumMainContentWidth
+    }
+
+    static func minimumMainContentWidth(
+        for destination: SidebarDestination?,
+        browserLayout: BrowserLayout,
+        visibleFileColumns: Set<FileColumn>,
+        visibleAppColumns: Set<AppColumn>
+    ) -> CGFloat {
+        switch destination {
+        case .apps:
+            let columns = visibleAppColumns.isEmpty ? Set([AppColumn.package]) : visibleAppColumns
+            let minimumWidths: [AppColumn: CGFloat] = [
+                .package: 300,
+                .status: 82,
+                .kind: 64,
+                .enabled: 74,
+                .size: 82,
+                .apk: 150
+            ]
+            return max(560, columns.reduce(0) { $0 + (minimumWidths[$1] ?? 0) })
+        case .trash:
+            // The native five-column Table remains useful at this width without
+            // collapsing its metadata columns to nearly empty slivers.
+            return 720
+        case .storage:
+            return 620
+        case .usbTransfer, .usbTransferLocation:
+            return 622
+        case .location, nil:
+            guard browserLayout == .list else { return 520 }
+            let columns = visibleFileColumns.isEmpty ? Set([FileColumn.name]) : visibleFileColumns
+            let minimumWidths: [FileColumn: CGFloat] = [
+                .name: 160,
+                .kind: 54,
+                .size: 72,
+                .modified: 84,
+                .created: 84,
+                .permissions: 72
+            ]
+            return max(520, columns.reduce(0) { $0 + (minimumWidths[$1] ?? 0) })
+        }
+    }
+}
+
+struct StoragePrefetchActivity: Equatable, Sendable {
+    var hasReadyDevice: Bool
+    var usesADBConnection: Bool
+    var hasForegroundOperation: Bool
+    var hasActiveTransfer: Bool
+    var hasActiveUSBOperation: Bool
+    var hasActiveSearch: Bool
+    var hasActiveNavigation: Bool
+    var hasActiveFolderAnalysis: Bool
+    var hasActiveCapture: Bool
+    var isPollingConnections: Bool
+    var isPreparingForTermination: Bool
+
+    var isIdle: Bool {
+        hasReadyDevice
+            && usesADBConnection
+            && !hasForegroundOperation
+            && !hasActiveTransfer
+            && !hasActiveUSBOperation
+            && !hasActiveSearch
+            && !hasActiveNavigation
+            && !hasActiveFolderAnalysis
+            && !hasActiveCapture
+            && !isPollingConnections
+            && !isPreparingForTermination
+    }
+}
+
 public enum FileSearchScope: String, CaseIterable, Identifiable, Codable, Sendable {
     case currentFolder
     case fullDevice

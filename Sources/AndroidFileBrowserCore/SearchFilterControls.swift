@@ -21,14 +21,18 @@ struct SearchFilterRows: View {
                 relation: "is",
                 trailingButtons: { kindTrailingButtons }
             ) {
-                Menu {
-                    Picker("Kind", selection: $kindFilter) {
-                        ForEach(FileSearchKindFilter.allCases) { filter in
-                            Label(filter.label, systemImage: filter.systemImage).tag(filter)
+                Group {
+                    if typedKindFilter != nil {
+                        Label(effectiveKindFilter.label, systemImage: effectiveKindFilter.systemImage)
+                    } else {
+                        Picker("Kind", selection: $kindFilter) {
+                            ForEach(FileSearchKindFilter.allCases) { filter in
+                                Label(filter.label, systemImage: filter.systemImage).tag(filter)
+                            }
                         }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
                     }
-                } label: {
-                    Label(effectiveKindFilter.label, systemImage: effectiveKindFilter.systemImage)
                 }
                 .disabled(typedKindFilter != nil)
                 .help(typedKindFilter == nil ? "Kind: choose the file type to show." : "Kind was typed in the search field. Remove the typed filter to change it here.")
@@ -47,15 +51,13 @@ struct SearchFilterRows: View {
                     relation: "is",
                     trailingButtons: { dateTrailingButtons }
                 ) {
-                    Menu {
-                        Picker("Last Modified", selection: $dateFilter) {
-                            ForEach(FileSearchDateFilter.allCases) { filter in
-                                Text(filter.label).tag(filter)
-                            }
+                    Picker("Last Modified", selection: $dateFilter) {
+                        ForEach(FileSearchDateFilter.allCases) { filter in
+                            Text(filter.label).tag(filter)
                         }
-                    } label: {
-                        Label(dateFilter.label, systemImage: "calendar")
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
                     .help("Last Modified: filter by when Android reports the item was changed.")
                 }
             }

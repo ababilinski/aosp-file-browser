@@ -3,11 +3,13 @@ import SwiftUI
 struct FileBrowserView: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var settings: AppSettings
+    let onBlankSpaceDeselection: () -> Void
     @State private var dropTargeted = false
 
-    init(model: AppModel) {
+    init(model: AppModel, onBlankSpaceDeselection: @escaping () -> Void) {
         self.model = model
         self.settings = model.settings
+        self.onBlankSpaceDeselection = onBlankSpaceDeselection
     }
 
     var body: some View {
@@ -21,9 +23,9 @@ struct FileBrowserView: View {
             ZStack {
                 switch model.browserLayout {
                 case .list:
-                    FileList(model: model)
+                    FileList(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
                 case .icons:
-                    FileIconGrid(model: model)
+                    FileIconGrid(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
                 }
 
                 if dropTargeted {
@@ -74,7 +76,14 @@ private struct PathBar: View {
                 pathControls
 
                 if model.shouldShowSearchOptions {
-                    FinderSearchOptionsBar(model: model)
+                    FinderSearchOptionsBar(
+                        snapshot: FinderSearchOptionsSnapshot(model: model),
+                        searchScope: $model.searchScope,
+                        kindFilter: $model.searchKindFilter,
+                        dateFilter: $model.searchDateFilter,
+                        clearKindFilter: model.clearSearchKindFilter
+                    )
+                    .equatable()
                 }
             }
         }
@@ -193,12 +202,41 @@ private struct PathSegment: Identifiable {
     let path: String
 }
 
-private struct FinderSearchOptionsBar: View {
-    @ObservedObject var model: AppModel
+struct FinderSearchOptionsSnapshot: Equatable {
+    let searchScope: FileSearchScope
+    let kindFilter: FileSearchKindFilter
+    let effectiveKindFilter: FileSearchKindFilter
+    let typedKindFilter: FileSearchKindFilter?
+    let dateFilter: FileSearchDateFilter
+    let isSearchingFullDevice: Bool
+    let hasSearchFiltersApplied: Bool
+
+    @MainActor
+    init(model: AppModel) {
+        searchScope = model.searchScope
+        kindFilter = model.searchKindFilter
+        effectiveKindFilter = model.effectiveSearchKindFilter
+        typedKindFilter = model.parsedSearchQuery.kindFilter
+        dateFilter = model.searchDateFilter
+        isSearchingFullDevice = model.isSearchingFullDevice
+        hasSearchFiltersApplied = model.hasSearchFiltersApplied
+    }
+}
+
+private struct FinderSearchOptionsBar: View, Equatable {
+    nonisolated let snapshot: FinderSearchOptionsSnapshot
+    @Binding var searchScope: FileSearchScope
+    @Binding var kindFilter: FileSearchKindFilter
+    @Binding var dateFilter: FileSearchDateFilter
+    let clearKindFilter: () -> Void
     @State private var showsFilterRows = false
 
     private var shouldShowFilterRows: Bool {
-        showsFilterRows || model.hasSearchFiltersApplied
+        showsFilterRows || snapshot.hasSearchFiltersApplied
+    }
+
+    nonisolated static func == (lhs: FinderSearchOptionsBar, rhs: FinderSearchOptionsBar) -> Bool {
+        lhs.snapshot == rhs.snapshot
     }
 
     var body: some View {
@@ -209,7 +247,7 @@ private struct FinderSearchOptionsBar: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: true, vertical: false)
 
-                Picker(selection: $model.searchScope) {
+                Picker(selection: $searchScope) {
                     ForEach(FileSearchScope.allCases) { scope in
                         Text(scope.label)
                             .lineLimit(1)
@@ -225,7 +263,7 @@ private struct FinderSearchOptionsBar: View {
 
                 Spacer()
 
-                if model.isSearchingFullDevice {
+                if snapshot.isSearchingFullDevice {
                     ProgressView()
                         .controlSize(.small)
                     Text("Searching")
@@ -246,13 +284,12 @@ private struct FinderSearchOptionsBar: View {
 
             if shouldShowFilterRows {
                 SearchFilterRows(
-                    kindFilter: $model.searchKindFilter,
-                    effectiveKindFilter: model.effectiveSearchKindFilter,
-                    typedKindFilter: model.parsedSearchQuery.kindFilter,
-                    dateFilter: $model.searchDateFilter
-                ) {
-                    model.clearSearchKindFilter()
-                }
+                    kindFilter: $kindFilter,
+                    effectiveKindFilter: snapshot.effectiveKindFilter,
+                    typedKindFilter: snapshot.typedKindFilter,
+                    dateFilter: $dateFilter,
+                    clearKindFilter: clearKindFilter
+                )
             }
         }
         .padding(.horizontal, 12)
@@ -263,9 +300,10 @@ private struct FinderSearchOptionsBar: View {
 
 private struct FileList: View {
     @ObservedObject var model: AppModel
+    let onBlankSpaceDeselection: () -> Void
 
     var body: some View {
-        FileColumnBrowser(model: model, density: .compact)
+        FileColumnBrowser(model: model, density: .compact, onBlankSpaceDeselection: onBlankSpaceDeselection)
     }
 }
 
@@ -291,6 +329,7 @@ private enum FileRowDensity {
 private struct FileColumnBrowser: View {
     @ObservedObject var model: AppModel
     let density: FileRowDensity
+    let onBlankSpaceDeselection: () -> Void
     @State private var columnWidths: [FileColumn: CGFloat] = [:]
     @State private var resizeStartWidths: [FileColumn: CGFloat]?
     @State private var scrollPositionID: AndroidFile.ID?
@@ -323,7 +362,7 @@ private struct FileColumnBrowser: View {
                 ZStack {
                     ScrollView {
                         ZStack(alignment: .topLeading) {
-                            FileBrowserBackgroundSurface(model: model)
+                            FileBrowserBackgroundSurface(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
                                 .frame(width: layout.totalWidth)
                                 .frame(minHeight: max(proxy.size.height - 33, 0))
 
@@ -848,6 +887,7 @@ private let fileShortDateFormatter: DateFormatter = {
 
 private struct FileIconGrid: View {
     @ObservedObject var model: AppModel
+    let onBlankSpaceDeselection: () -> Void
     private let columns = [GridItem(.adaptive(minimum: 108, maximum: 150), spacing: 16)]
     @State private var scrollPositionID: AndroidFile.ID?
     @State private var scrollPositionsByPath: [String: AndroidFile.ID] = [:]
@@ -866,7 +906,7 @@ private struct FileIconGrid: View {
             GeometryReader { proxy in
                 ScrollView {
                     ZStack(alignment: .top) {
-                        FileBrowserBackgroundSurface(model: model)
+                        FileBrowserBackgroundSurface(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
                             .frame(maxWidth: .infinity)
                             .frame(minHeight: proxy.size.height)
 
@@ -903,12 +943,14 @@ private struct FileIconGrid: View {
 
 private struct FileBrowserBackgroundSurface: View {
     @ObservedObject var model: AppModel
+    let onBlankSpaceDeselection: () -> Void
 
     var body: some View {
         Color.clear
             .contentShape(Rectangle())
             .onTapGesture {
-                model.clearFileSelection()
+                model.clearFileBrowserSelection()
+                onBlankSpaceDeselection()
             }
             .contextMenu {
                 FileBrowserBackgroundContextMenu(model: model)
