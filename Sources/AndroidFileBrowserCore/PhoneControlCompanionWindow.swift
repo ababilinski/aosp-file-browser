@@ -447,7 +447,12 @@ private struct PhoneControlCompanionBar: View {
                                 .frame(width: 24, height: 24)
                         }
                         .buttonStyle(.borderless)
-                        .disabled(!isConnected || model.isCapturingScreenshot || model.screenRecordingSession != nil)
+                        .disabled(
+                            !isConnected
+                                || model.isCapturingScreenshot
+                                || model.screenRecordingSession != nil
+                                || model.hasPhoneControlTransitionInProgress
+                        )
                         .help("Take a screenshot")
                         .accessibilityLabel("Take a screenshot")
                     }
@@ -469,8 +474,8 @@ private struct PhoneControlCompanionBar: View {
                         }
                         .buttonStyle(.borderless)
                         .disabled(recordingButtonIsDisabled)
-                        .help(isRecording ? "Stop and save this recording" : "Start recording this display")
-                        .accessibilityLabel(isRecording ? "Stop recording" : "Start recording")
+                        .help(isRecording ? "Stop and save this recording" : "Choose recording options")
+                        .accessibilityLabel(isRecording ? "Stop recording" : "Record screen")
                     }
 
                     if capabilities.supportsKeyEvents {
@@ -647,6 +652,7 @@ private struct PhoneControlCompanionBar: View {
             || model.isFinishingScreenRecording
             || model.isCapturingScreenshot
             || model.screenRecordingSession != nil
+            || model.hasPhoneControlTransitionInProgress
     }
 
     private var isConnected: Bool {

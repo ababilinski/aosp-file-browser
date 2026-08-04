@@ -63,6 +63,119 @@ final class PhoneControlTests: XCTestCase {
         XCTAssertEqual(value(after: "--video-bit-rate", in: arguments), "18M")
     }
 
+    func testScreenRecordingAudioArgumentsUseSynchronizedQuickTimeCompatibleCapture() {
+        let outputURL = URL(filePath: "/tmp/Recording with audio.mp4")
+        let options = ScreenRecordingOptions(
+            durationMode: .fixed,
+            fixedDurationSeconds: 45,
+            resolutionPreset: .fullHD1080,
+            videoBitRateMbps: 18
+        )
+
+        let arguments = ADBClient.scrcpyScreenRecordingArguments(
+            serial: "device-serial",
+            localURL: outputURL,
+            options: options,
+            audioSource: .deviceAudio
+        )
+
+        XCTAssertEqual(value(after: "--serial", in: arguments), "device-serial")
+        XCTAssertTrue(arguments.contains("--record=/tmp/Recording with audio.mp4"))
+        XCTAssertTrue(arguments.contains("--record-format=mp4"))
+        XCTAssertTrue(arguments.contains("--video-codec=h264"))
+        XCTAssertTrue(arguments.contains("--audio-codec=aac"))
+        XCTAssertTrue(arguments.contains("--audio-source=output"))
+        XCTAssertTrue(arguments.contains("--require-audio"))
+        XCTAssertTrue(arguments.contains("--no-playback"))
+        XCTAssertTrue(arguments.contains("--no-window"))
+        XCTAssertTrue(arguments.contains("--no-control"))
+        XCTAssertTrue(arguments.contains("--max-size=1920"))
+        XCTAssertTrue(arguments.contains("--video-bit-rate=18M"))
+        XCTAssertTrue(arguments.contains("--time-limit=45"))
+    }
+
+    func testScreenRecordingCanChoosePhoneMicrophoneOrCombinedPhoneAudio() {
+        let baseOptions = ScreenRecordingOptions()
+        let outputURL = URL(filePath: "/tmp/recording.mp4")
+
+        let microphoneArguments = ADBClient.scrcpyScreenRecordingArguments(
+            serial: "device",
+            localURL: outputURL,
+            options: baseOptions,
+            audioSource: .phoneMicrophone
+        )
+        let combinedArguments = ADBClient.scrcpyScreenRecordingArguments(
+            serial: "device",
+            localURL: outputURL,
+            options: baseOptions,
+            audioSource: .deviceAndMicrophone
+        )
+
+        XCTAssertTrue(microphoneArguments.contains("--audio-source=mic"))
+        XCTAssertTrue(combinedArguments.contains("--audio-source=voice-performance"))
+        XCTAssertFalse(microphoneArguments.contains { $0.hasPrefix("--time-limit=") })
+        XCTAssertTrue(ADBClient.scrcpyScreenRecordingArguments(
+            serial: "device",
+            localURL: outputURL,
+            options: baseOptions,
+            audioSource: .none
+        ).isEmpty)
+    }
+
+    func testScreenRecordingAudioCapabilityParserAcceptsEveryUsedOptionAndSource() {
+        let capabilities = ScrcpyScreenRecordingAudioCapabilities.parse(
+            helpOutput: compatibleScreenRecordingHelp
+        )
+
+        XCTAssertTrue(capabilities.supports(audioSources: [.deviceAudio]))
+        XCTAssertTrue(capabilities.supports(audioSources: [.phoneMicrophone]))
+        XCTAssertTrue(capabilities.supports(audioSources: [.deviceAndMicrophone]))
+        XCTAssertTrue(capabilities.supports(audioSources: [
+            .deviceAudio,
+            .phoneMicrophone,
+            .deviceAndMicrophone
+        ]))
+    }
+
+    func testScreenRecordingAudioCapabilityParserRejectsOldCombinedAudioSource() {
+        let oldHelp = compatibleScreenRecordingHelp.replacingOccurrences(
+            of: "         - \"voice-performance\": combined phone audio\n",
+            with: ""
+        )
+        let capabilities = ScrcpyScreenRecordingAudioCapabilities.parse(helpOutput: oldHelp)
+
+        XCTAssertTrue(capabilities.supports(audioSources: [.deviceAudio, .phoneMicrophone]))
+        XCTAssertFalse(capabilities.supports(audioSources: [.deviceAndMicrophone]))
+    }
+
+    func testScreenRecordingAudioCapabilityParserRejectsIncompleteRecordingOptions() {
+        let incompleteHelp = compatibleScreenRecordingHelp.replacingOccurrences(
+            of: "    --require-audio\n",
+            with: ""
+        )
+        let capabilities = ScrcpyScreenRecordingAudioCapabilities.parse(helpOutput: incompleteHelp)
+
+        XCTAssertFalse(capabilities.supports(audioSources: [.deviceAudio]))
+    }
+
+    func testScreenRecordingAudioRequiresVerifiedScrcpyVersion() {
+        XCTAssertTrue(ScrcpyScreenRecordingAudioCapabilities.supportsRequiredVersion(
+            "scrcpy 4.1 <https://github.com/Genymobile/scrcpy>"
+        ))
+        XCTAssertTrue(ScrcpyScreenRecordingAudioCapabilities.supportsRequiredVersion(
+            "scrcpy 5.0"
+        ))
+        XCTAssertFalse(ScrcpyScreenRecordingAudioCapabilities.supportsRequiredVersion(
+            "scrcpy 4.0 <https://github.com/Genymobile/scrcpy>"
+        ))
+        XCTAssertFalse(ScrcpyScreenRecordingAudioCapabilities.supportsRequiredVersion(
+            "scrcpy 3.2"
+        ))
+        XCTAssertFalse(ScrcpyScreenRecordingAudioCapabilities.supportsRequiredVersion(
+            "not scrcpy"
+        ))
+    }
+
     func testSeparateSessionsReceiveSeparateInitialPlacements() {
         let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
         let visible = CGRect(x: 0, y: 40, width: 1512, height: 918)
@@ -145,5 +258,29 @@ final class PhoneControlTests: XCTestCase {
             return nil
         }
         return arguments[index + 1]
+    }
+
+    private var compatibleScreenRecordingHelp: String {
+        """
+        Usage: scrcpy [options]
+            -s, --serial=serial
+            -r, --record=file
+            --record-format=format
+            -N, --no-playback
+            --no-window
+            --no-control
+            --no-clipboard-autosync
+            --video-codec=name
+            --audio-codec=name
+            --audio-bit-rate=value
+            --audio-source=source
+                 - "output": device output
+                 - "mic": phone microphone
+                 - "voice-performance": combined phone audio
+            --require-audio
+            --video-bit-rate=value
+            -m, --max-size=value
+            --time-limit=seconds
+        """
     }
 }

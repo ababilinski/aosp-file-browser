@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 
 public actor DeviceManager {
@@ -1510,8 +1511,45 @@ public actor DeviceCaptureService {
         )
     }
 
-    public func startScreenRecording(device: AndroidDevice, options: ScreenRecordingOptions) async throws -> ADBScreenRecordingProcess {
+    public func validatePhoneRecordingAudioSupport(device: AndroidDevice) async throws {
+        let result = try await adb.shell(
+            serial: device.serial,
+            "getprop ro.build.version.sdk",
+            allowFailure: true,
+            timeout: 6
+        )
+        let rawValue = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let sdkVersion = Int(rawValue), sdkVersion < 30 {
+            throw FileOperationError.commandFailed(
+                "Phone audio recording requires Android 11 or later. \(device.title) is running an older Android version."
+            )
+        }
+    }
+
+    public func startScreenRecording(
+        device: AndroidDevice,
+        options: ScreenRecordingOptions,
+        audioSource: PhoneRecordingAudioSource = .none
+    ) async throws -> ScreenRecordingProcess {
         await wakeDisplay(serial: device.serial)
+
+        if audioSource != .none {
+            try await validatePhoneRecordingAudioSupport(device: device)
+            let localURL = try outputURL(prefix: "Recording", extension: "mp4")
+            do {
+                let handle = try await adb.startScrcpyScreenRecording(
+                    serial: device.serial,
+                    localURL: localURL,
+                    options: options,
+                    audioSource: audioSource
+                )
+                return .scrcpy(handle)
+            } catch {
+                try? FileManager.default.removeItem(at: localURL)
+                throw error
+            }
+        }
+
         let remotePath = "/sdcard/AndroidFileBrowserRecording-\(UUID().uuidString).mp4"
         let handle = try await adb.startScreenRecording(
             serial: device.serial,
@@ -1536,7 +1574,7 @@ public actor DeviceCaptureService {
                     ?? "A selected display stopped before recording began. Make sure it is connected and awake, then try again."
             )
         }
-        return handle
+        return .adb(handle)
     }
 
     private func wakeDisplay(serial: String) async {
@@ -1549,6 +1587,24 @@ public actor DeviceCaptureService {
     }
 
     public func finishScreenRecording(
+        handle: ScreenRecordingProcess,
+        restorePlan: ScreenRecordingRestorePlan?
+    ) async throws -> URL {
+        switch handle {
+        case .adb(let adbHandle):
+            return try await finishADBScreenRecording(
+                handle: adbHandle,
+                restorePlan: restorePlan
+            )
+        case .scrcpy(let scrcpyHandle):
+            return try await finishScrcpyScreenRecording(
+                handle: scrcpyHandle,
+                restorePlan: restorePlan
+            )
+        }
+    }
+
+    private func finishADBScreenRecording(
         handle: ADBScreenRecordingProcess,
         restorePlan: ScreenRecordingRestorePlan?
     ) async throws -> URL {
@@ -1575,6 +1631,41 @@ public actor DeviceCaptureService {
             try? FileManager.default.removeItem(at: localURL)
             await restoreScreenRecordingSettings(serial: handle.serial, restorePlan: restorePlan)
             _ = try? await adb.shell(serial: handle.serial, "rm -f \(ADBClient.quoteRemote(handle.remotePath))", allowFailure: true, timeout: 8)
+            throw error
+        }
+    }
+
+    private func finishScrcpyScreenRecording(
+        handle: ScrcpyScreenRecordingProcess,
+        restorePlan: ScreenRecordingRestorePlan?
+    ) async throws -> URL {
+        let exited = await Task.detached(priority: .userInitiated) {
+            handle.waitUntilExit(timeout: 5)
+        }.value
+        try? await Task.sleep(for: .milliseconds(250))
+
+        do {
+            let fileSize = (try? handle.localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            guard exited, fileSize > 0 else {
+                throw FileOperationError.commandFailed(
+                    "\(handle.serial) stopped before its recording could be saved."
+                )
+            }
+
+            let asset = AVURLAsset(url: handle.localURL)
+            let videoTracks = try await asset.loadTracks(withMediaType: .video)
+            let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+            guard !videoTracks.isEmpty, !audioTracks.isEmpty else {
+                throw FileOperationError.commandFailed(
+                    "The selected phone audio source was unavailable, so the recording was not saved silently. Unlock the phone and try again."
+                )
+            }
+
+            await restoreScreenRecordingSettings(serial: handle.serial, restorePlan: restorePlan)
+            return handle.localURL
+        } catch {
+            try? FileManager.default.removeItem(at: handle.localURL)
+            await restoreScreenRecordingSettings(serial: handle.serial, restorePlan: restorePlan)
             throw error
         }
     }

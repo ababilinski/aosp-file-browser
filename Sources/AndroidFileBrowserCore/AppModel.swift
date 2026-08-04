@@ -36,8 +36,14 @@ private struct PreparedCaptureDevice {
 
 private struct ScreenRecordingLaunchOutcome: @unchecked Sendable {
     let device: AndroidDevice
-    let handle: ADBScreenRecordingProcess?
+    let handle: ScreenRecordingProcess?
     let errorMessage: String?
+}
+
+private struct ScreenRecordingFinishOutcome: @unchecked Sendable {
+    let serial: String
+    let source: CapturedVideoSource?
+    let error: Error?
 }
 
 private struct FileHistoryFolder {
@@ -186,11 +192,14 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var isApplyingCapturePresentation = false
     @Published public var screenshotOptions = ScreenRecordingOptions()
     @Published public var screenRecordingOptions = ScreenRecordingOptions()
+    @Published public var screenRecordingAudioOptions = ScreenRecordingAudioOptions()
     @Published public var phoneControlOptions = ScreenRecordingOptions()
     @Published public var screenshotCaptureDeviceSerials: Set<String> = []
     @Published public var recordingCaptureDeviceSerials: Set<String> = []
     @Published public private(set) var screenRecordingSession: ScreenRecordingSession?
     @Published public private(set) var phoneControlSessions: [PhoneControlSession] = []
+    @Published public private(set) var phoneControlsRestartingWithoutAudio = Set<String>()
+    @Published public private(set) var phoneControlShutdownsInProgress = Set<String>()
     @Published public private(set) var phoneControlCapabilityStates: [String: PhoneControlCapabilityState] = [:]
     @Published public private(set) var captureAppChoices: [AndroidPackage] = []
     @Published public private(set) var isLoadingCaptureApps = false
@@ -280,6 +289,7 @@ public final class AppModel: ObservableObject {
     private let appManager: AppManagerService
     private let captureService: DeviceCaptureService
     private let captureCompositionService: CaptureCompositionService
+    private let macMicrophoneCaptureService: MacMicrophoneCaptureService
     private let thumbnailService: ThumbnailService
     private let thumbnailRequestScheduler = ADBThumbnailRequestScheduler(maximumConcurrentRequests: 1)
     private let cacheStore: AppCacheStore
@@ -304,7 +314,8 @@ public final class AppModel: ObservableObject {
     private var usbTransferManagerCancellable: AnyCancellable?
     private var delayedTransferPresentationTasks: [UUID: Task<Void, Never>] = [:]
     private var presentedDelayedTransferJobIDs = Set<UUID>()
-    private var screenRecordingHandles: [String: ADBScreenRecordingProcess] = [:]
+    private var screenRecordingHandles: [String: ScreenRecordingProcess] = [:]
+    private var macMicrophoneCaptureHandle: MacMicrophoneCaptureHandle?
     private var screenRecordingRestorePlans: [String: ScreenRecordingRestorePlan] = [:]
     private var screenRecordingMonitorTask: Task<Void, Never>?
     private var phoneControlRestorePlans: [String: ScreenRecordingRestorePlan] = [:]
@@ -433,6 +444,7 @@ public final class AppModel: ObservableObject {
         self.appManager = AppManagerService(adb: adb)
         self.captureService = DeviceCaptureService(adb: adb)
         self.captureCompositionService = CaptureCompositionService()
+        self.macMicrophoneCaptureService = MacMicrophoneCaptureService()
         self.thumbnailService = ThumbnailService()
         self.sidebarSelection = .location(Self.defaultQuickLocations[0])
         self.trashRecords = []
@@ -500,6 +512,10 @@ public final class AppModel: ObservableObject {
         phoneControlSessions.first { $0.deviceSerial == deviceSerial }
     }
 
+    public var hasPhoneControlTransitionInProgress: Bool {
+        !phoneControlsRestartingWithoutAudio.isEmpty || !phoneControlShutdownsInProgress.isEmpty
+    }
+
     public func phoneControlCapabilityState(for deviceSerial: String) -> PhoneControlCapabilityState? {
         phoneControlCapabilityStates[deviceSerial]
     }
@@ -528,9 +544,16 @@ public final class AppModel: ObservableObject {
         settings.trashQuitBehavior == .emptyAutomatically && !trashRecords.isEmpty
     }
 
+    public var hasActiveScreenRecordingActivity: Bool {
+        screenRecordingSession != nil || isStartingScreenRecording || isFinishingScreenRecording
+    }
+
     public func beginTerminationRequest() -> Bool {
         let hasActiveTransfer = transferQueue.unfinishedJobs.contains { $0.kind != .preview }
         guard !isPreparingForTermination,
+              screenRecordingSession == nil,
+              !isStartingScreenRecording,
+              !isFinishingScreenRecording,
               !operationActivity.hasTerminationBlockingActivity,
               !isRunningFileHistoryOperation,
               !usbTransferManager.hasTerminationBlockingActivity,
@@ -6180,8 +6203,19 @@ public final class AppModel: ObservableObject {
         requestPhoneCapture(.screenshot)
     }
 
-    public func requestScreenRecording() {
+    public func requestScreenRecording(deviceSerial: String? = nil) {
+        if let deviceSerial {
+            guard prepareScreenRecordingSelection(deviceSerial: deviceSerial) else { return }
+        }
         requestPhoneCapture(.recording)
+    }
+
+    public func requestScreenRecordingFromPhoneControl(deviceSerial: String) {
+        guard phoneControlSession(for: deviceSerial) != nil,
+              prepareScreenRecordingSelection(deviceSerial: deviceSerial) else { return }
+        activePhoneCapturePopoverMode = nil
+        PhoneCaptureWindowPresenter.show(model: self, mode: .recording)
+        statusMessage = "Choose displays and audio sources for the recording."
     }
 
     public func requestPhoneControl() {
@@ -6295,6 +6329,26 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    @discardableResult
+    private func prepareScreenRecordingSelection(deviceSerial: String) -> Bool {
+        guard devices.contains(where: { $0.serial == deviceSerial && $0.state == .device }) else {
+            return false
+        }
+        recordingCaptureDeviceSerials.insert(deviceSerial)
+        return true
+    }
+
+    func screenRecordingPhoneAudioSource(for deviceSerial: String) -> PhoneRecordingAudioSource {
+        screenRecordingAudioOptions.phoneSource(for: deviceSerial)
+    }
+
+    func setScreenRecordingPhoneAudioSource(
+        _ source: PhoneRecordingAudioSource,
+        for deviceSerial: String
+    ) {
+        screenRecordingAudioOptions.setPhoneSource(source, for: deviceSerial)
+    }
+
     private func captureDevices(for mode: PhoneCaptureMode, explicitSerial: String? = nil) -> [AndroidDevice] {
         let serials = explicitSerial.map { Set([$0]) } ?? selectedCaptureDeviceSerials(for: mode)
         return devices.filter { serials.contains($0.serial) && $0.state == .device }
@@ -6308,7 +6362,8 @@ public final class AppModel: ObservableObject {
         guard !isCapturingScreenshot,
               screenRecordingSession == nil,
               !isStartingScreenRecording,
-              !isFinishingScreenRecording else { return }
+              !isFinishingScreenRecording,
+              !hasPhoneControlTransitionInProgress else { return }
 
         isCapturingScreenshot = true
         statusMessage = "Capturing screenshot..."
@@ -6412,14 +6467,20 @@ public final class AppModel: ObservableObject {
               !isCapturingScreenshot,
               !isLaunchingScrcpy,
               !isStartingScreenRecording,
-              !isFinishingScreenRecording else { return }
+              !isFinishingScreenRecording,
+              !hasPhoneControlTransitionInProgress else { return }
 
         isStartingScreenRecording = true
         screenRecordingRequestDeviceSerial = deviceSerial
         statusMessage = "Preparing screen recording..."
+        var pendingMacMicrophoneHandle: MacMicrophoneCaptureHandle?
+        var didCommitRecordingSession = false
         defer {
             isStartingScreenRecording = false
             screenRecordingRequestDeviceSerial = nil
+            if !didCommitRecordingSession {
+                pendingMacMicrophoneHandle?.cleanup()
+            }
         }
 
         do {
@@ -6428,6 +6489,25 @@ public final class AppModel: ObservableObject {
             try await adb.validateADB()
             let options = normalizedCaptureOptions(screenRecordingOptions)
             screenRecordingOptions = options
+            let captureDeviceSerials = Set(captureDevices.map(\.serial))
+            let audioOptions = screenRecordingAudioOptions.limited(to: captureDeviceSerials)
+
+            if audioOptions.hasPhoneAudio {
+                try await adb.validateScreenRecordingAudioTools(
+                    audioSources: captureDevices.map { audioOptions.phoneSource(for: $0.serial) }
+                )
+                for device in captureDevices where audioOptions.phoneSource(for: device.serial) != .none {
+                    guard phoneControlSession(for: device.serial)?.capturesAudio != true else {
+                        throw FileOperationError.commandFailed(
+                            "Restart Phone Control for \(device.title) without audio before recording that phone's system audio or microphone."
+                        )
+                    }
+                    try await captureService.validatePhoneRecordingAudioSupport(device: device)
+                }
+            }
+            if audioOptions.capturesMacMicrophone {
+                pendingMacMicrophoneHandle = try await macMicrophoneCaptureService.start()
+            }
 
             var restorePlans: [String: ScreenRecordingRestorePlan] = [:]
             for device in captureDevices {
@@ -6458,7 +6538,8 @@ public final class AppModel: ObservableObject {
                         do {
                             let handle = try await captureService.startScreenRecording(
                                 device: device,
-                                options: options
+                                options: options,
+                                audioSource: audioOptions.phoneSource(for: device.serial)
                             )
                             return ScreenRecordingLaunchOutcome(
                                 device: device,
@@ -6499,18 +6580,51 @@ public final class AppModel: ObservableObject {
                     startedAt: handle.startedAt
                 )
             }
-            let session = ScreenRecordingSession(devices: deviceSessions, options: options)
+            let session = ScreenRecordingSession(
+                devices: deviceSessions,
+                options: options,
+                audioOptions: audioOptions
+            )
             screenRecordingHandles = handles
             screenRecordingRestorePlans = restorePlans
+            macMicrophoneCaptureHandle = pendingMacMicrophoneHandle
             screenRecordingSession = session
+            didCommitRecordingSession = true
+            let audioSourceCount = audioOptions.sourceCount(for: captureDeviceSerials)
+            let audioDetail = audioSourceCount == 0
+                ? ""
+                : " with \(audioSourceCount) audio source\(audioSourceCount == 1 ? "" : "s")"
             statusMessage = captureDevices.count > 1
-                ? "Recording \(captureDevices.count) displays."
-                : "Recording \(captureDevices[0].title)."
+                ? "Recording \(captureDevices.count) displays\(audioDetail)."
+                : "Recording \(captureDevices[0].title)\(audioDetail)."
             startScreenRecordingMonitor(sessionID: session.id, handles: handles)
         } catch FileOperationError.commandFailed(let message) where isADBConnectionFailure(message) {
             handleADBConnectionFailure()
         } catch FileOperationError.commandFailed(let message) {
             alert = UserAlert(title: "Recording Couldn't Start", message: message)
+            statusMessage = "Screen recording could not start."
+        } catch FileOperationError.missingTool(let tool) {
+            presentToolSetup(
+                tool: ToolchainTool(rawValue: tool.lowercased()) ?? .scrcpy,
+                resumeAction: .screenRecording(deviceSerial: deviceSerial),
+                force: true
+            )
+        } catch FileOperationError.toolUnavailable(let tool, let reason) {
+            if isTransientToolTimeout(tool: tool, reason: reason) {
+                presentTransientToolTimeout(reason)
+            } else {
+                presentToolSetup(
+                    tool: tool,
+                    issue: reason,
+                    resumeAction: .screenRecording(deviceSerial: deviceSerial),
+                    force: true
+                )
+            }
+        } catch let error as MacMicrophoneCaptureError {
+            alert = UserAlert(
+                title: "Mac Microphone Couldn't Start",
+                message: error.localizedDescription
+            )
             statusMessage = "Screen recording could not start."
         } catch {
             handleOperationError(error)
@@ -6518,7 +6632,7 @@ public final class AppModel: ObservableObject {
     }
 
     private func discardPartiallyStartedRecordings(
-        handles: [String: ADBScreenRecordingProcess],
+        handles: [String: ScreenRecordingProcess],
         restorePlans: [String: ScreenRecordingRestorePlan]
     ) async {
         handles.values.forEach { $0.stop() }
@@ -6530,6 +6644,8 @@ public final class AppModel: ObservableObject {
                 )
                 if let discardedURL {
                     try? FileManager.default.removeItem(at: discardedURL)
+                } else if let localArtifactURL = handle.localArtifactURL {
+                    try? FileManager.default.removeItem(at: localArtifactURL)
                 }
             } else if phoneControlSession(for: serial) == nil {
                 await captureService.restoreScreenRecordingSettings(
@@ -6563,12 +6679,67 @@ public final class AppModel: ObservableObject {
             )
             return
         }
-        await startScreenRecording(deviceSerial: deviceSerial)
+        requestScreenRecordingFromPhoneControl(deviceSerial: deviceSerial)
+    }
+
+    public func restartPhoneControlWithoutAudioForRecording(deviceSerial: String) async {
+        guard let session = phoneControlSession(for: deviceSerial),
+              session.capturesAudio,
+              !hasPhoneControlTransitionInProgress else { return }
+
+        let placementIndex = phoneControlSessions.firstIndex { $0.deviceSerial == deviceSerial }
+        phoneControlsRestartingWithoutAudio.insert(deviceSerial)
+        defer { phoneControlsRestartingWithoutAudio.remove(deviceSerial) }
+        statusMessage = "Restarting Phone Control without audio..."
+        stopPhoneControl(deviceSerial: deviceSerial)
+
+        let deadline = ContinuousClock.now + .seconds(40)
+        while (phoneControlSession(for: deviceSerial) != nil
+            || phoneControlShutdownsInProgress.contains(deviceSerial)),
+            ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard phoneControlSession(for: deviceSerial) == nil,
+              !phoneControlShutdownsInProgress.contains(deviceSerial) else {
+            alert = UserAlert(
+                title: "Phone Control Couldn't Restart",
+                message: "Phone Control for \(session.deviceTitle) is still finishing cleanup. Wait a moment, then try again."
+            )
+            return
+        }
+
+        await launchScrcpy(
+            deviceSerial: deviceSerial,
+            capturesAudioOverride: false,
+            placementIndexOverride: placementIndex
+        )
     }
 
     public func launchScrcpy(deviceSerial: String? = nil) async {
+        guard !hasPhoneControlTransitionInProgress else { return }
+        await launchScrcpy(
+            deviceSerial: deviceSerial,
+            capturesAudioOverride: nil,
+            placementIndexOverride: nil
+        )
+    }
+
+    private func launchScrcpy(
+        deviceSerial: String?,
+        capturesAudioOverride: Bool?,
+        placementIndexOverride: Int?
+    ) async {
         guard let device = deviceSerial.flatMap({ serial in devices.first { $0.serial == serial } }) ?? selectedDevice else {
             handleADBConnectionFailure()
+            return
+        }
+        if let recordingSession = screenRecordingSession,
+           recordingSession.deviceSerials.contains(device.serial),
+           recordingSession.audioOptions.phoneSource(for: device.serial) != .none {
+            alert = UserAlert(
+                title: "Phone Audio Is Recording",
+                message: "Wait until the recording of \(device.title) finishes before opening Phone Control. This keeps Phone Control from competing for the selected audio source."
+            )
             return
         }
         if let session = phoneControlSession(for: device.serial) {
@@ -6581,7 +6752,10 @@ public final class AppModel: ObservableObject {
               !isStartingScreenRecording,
               !isFinishingScreenRecording else { return }
         isLaunchingScrcpy = true
-        let deviceOptions = settings.phoneControlOptions(for: device.serial)
+        var deviceOptions = settings.phoneControlOptions(for: device.serial)
+        if let capturesAudioOverride {
+            deviceOptions.capturesAudio = capturesAudioOverride
+        }
         statusMessage = "Opening Phone Control..."
         defer {
             isLaunchingScrcpy = false
@@ -6610,7 +6784,7 @@ public final class AppModel: ObservableObject {
             let observation: DetachedLaunchObservation
             do {
                 let preferredPlacement = PhoneControlCompanionWindowPresenter.preferredScrcpyPlacement(
-                    sessionIndex: phoneControlSessions.count
+                    sessionIndex: placementIndexOverride ?? phoneControlSessions.count
                 )
                 let placement = preferredPlacement.map {
                     ScrcpyWindowPlacement(
@@ -6634,7 +6808,13 @@ public final class AppModel: ObservableObject {
                 }
                 throw error
             }
-            registerPhoneControl(observation: observation, device: device, restorePlan: restorePlan)
+            registerPhoneControl(
+                observation: observation,
+                device: device,
+                restorePlan: restorePlan,
+                capturesAudio: deviceOptions.capturesAudio,
+                insertionIndex: placementIndexOverride
+            )
             suppressedToolSetup.remove(.scrcpy)
             statusMessage = "Phone Control opened for \(device.title)."
         } catch FileOperationError.noDevice {
@@ -6792,7 +6972,7 @@ public final class AppModel: ObservableObject {
 
     private func startScreenRecordingMonitor(
         sessionID: ScreenRecordingSession.ID,
-        handles: [String: ADBScreenRecordingProcess]
+        handles: [String: ScreenRecordingProcess]
     ) {
         screenRecordingMonitorTask?.cancel()
         screenRecordingMonitorTask = Task { @MainActor [weak self] in
@@ -6817,42 +6997,94 @@ public final class AppModel: ObservableObject {
         beginTrackedOperation()
         defer { endTrackedOperation() }
         let handles = screenRecordingHandles
+        let macMicrophoneHandle = macMicrophoneCaptureHandle
         if interrupt {
             handles.values.forEach { $0.stop() }
             Task.detached(priority: .utility) { [handles] in
-                try? await Task.sleep(for: .seconds(2))
+                // scrcpy needs time to flush the MP4 trailer after SIGINT. A
+                // shorter fallback can leave an otherwise valid recording
+                // unreadable before the normal five-second finalizer returns.
+                try? await Task.sleep(for: .seconds(5))
                 for handle in handles.values where handle.isRunning {
                     handle.terminate()
                 }
             }
         }
+        macMicrophoneHandle?.stop()
         statusMessage = "Saving screen recording..."
         let restorePlans = screenRecordingRestorePlans
         let phoneControlSerials = Set(session.deviceSerials.filter { phoneControlSession(for: $0) != nil })
 
         var sourcesBySerial: [String: CapturedVideoSource] = [:]
+        var supplementalAudio: [CapturedAudioSource] = []
         do {
             let captureService = captureService
-            try await withThrowingTaskGroup(of: (String, CapturedVideoSource).self) { group in
+            var firstFinishError: Error?
+            await withTaskGroup(of: ScreenRecordingFinishOutcome.self) { group in
                 for (serial, handle) in handles {
                     let restorePlan = restorePlans[serial]
                     group.addTask {
-                        let url = try await captureService.finishScreenRecording(
-                            handle: handle,
-                            restorePlan: restorePlan
-                        )
-                        return (serial, CapturedVideoSource(url: url, startedAt: handle.startedAt))
+                        do {
+                            let url = try await captureService.finishScreenRecording(
+                                handle: handle,
+                                restorePlan: restorePlan
+                            )
+                            let requestedOutputSize: CGSize?
+                            switch handle {
+                            case .adb:
+                                requestedOutputSize = nil
+                            case .scrcpy:
+                                requestedOutputSize = session.options.requestedRecordingSize
+                            }
+                            return ScreenRecordingFinishOutcome(
+                                serial: serial,
+                                source: CapturedVideoSource(
+                                    url: url,
+                                    startedAt: handle.startedAt,
+                                    startupTrim: handles.count > 1 ? handle.recommendedStartupTrim : 0,
+                                    requestedOutputSize: requestedOutputSize
+                                ),
+                                error: nil
+                            )
+                        } catch {
+                            return ScreenRecordingFinishOutcome(
+                                serial: serial,
+                                source: nil,
+                                error: error
+                            )
+                        }
                     }
                 }
-                for try await (serial, source) in group {
-                    sourcesBySerial[serial] = source
+                for await outcome in group {
+                    if let source = outcome.source {
+                        sourcesBySerial[outcome.serial] = source
+                    } else if firstFinishError == nil {
+                        firstFinishError = outcome.error
+                    }
                 }
             }
-            let orderedSources = session.deviceSerials.compactMap { sourcesBySerial[$0] }
-            let url = try await captureCompositionService.combineRecordings(orderedSources)
-            if orderedSources.count > 1 {
-                orderedSources.forEach { try? FileManager.default.removeItem(at: $0.url) }
+            if let firstFinishError {
+                throw firstFinishError
             }
+            if session.audioOptions.capturesMacMicrophone {
+                guard let macMicrophoneHandle else {
+                    throw MacMicrophoneCaptureError.recordingFileUnavailable
+                }
+                let audioURL = try macMicrophoneHandle.finalize()
+                supplementalAudio = [CapturedAudioSource(
+                    url: audioURL,
+                    startedAt: macMicrophoneHandle.startedAt
+                )]
+            }
+            let orderedSources = session.deviceSerials.compactMap { sourcesBySerial[$0] }
+            let url = try await captureCompositionService.combineRecordings(
+                orderedSources,
+                supplementalAudio: supplementalAudio
+            )
+            for source in orderedSources where source.url != url {
+                try? FileManager.default.removeItem(at: source.url)
+            }
+            supplementalAudio.forEach { try? FileManager.default.removeItem(at: $0.url) }
             clearScreenRecordingState()
             for serial in phoneControlSerials {
                 await reapplyPhoneControlPresentation(
@@ -6869,6 +7101,9 @@ public final class AppModel: ObservableObject {
                 : "Screen recording saved and opened in a preview window."
         } catch {
             sourcesBySerial.values.forEach { try? FileManager.default.removeItem(at: $0.url) }
+            handles.values.compactMap(\.localArtifactURL).forEach { try? FileManager.default.removeItem(at: $0) }
+            supplementalAudio.forEach { try? FileManager.default.removeItem(at: $0.url) }
+            macMicrophoneHandle?.cleanup()
             clearScreenRecordingState()
             for serial in phoneControlSerials {
                 await reapplyPhoneControlPresentation(
@@ -6878,7 +7113,7 @@ public final class AppModel: ObservableObject {
             }
             alert = UserAlert(
                 title: "Recording Couldn't Finish",
-                message: "The selected displays could not be saved together. Make sure each display is connected, awake, and able to record, then try again."
+                message: error.localizedDescription
             )
             statusMessage = "Screen recording could not be saved."
         }
@@ -6888,6 +7123,7 @@ public final class AppModel: ObservableObject {
         screenRecordingMonitorTask?.cancel()
         screenRecordingMonitorTask = nil
         screenRecordingHandles = [:]
+        macMicrophoneCaptureHandle = nil
         screenRecordingRestorePlans = [:]
         screenRecordingSession = nil
         isFinishingScreenRecording = false
@@ -6910,18 +7146,22 @@ public final class AppModel: ObservableObject {
     private func registerPhoneControl(
         observation: DetachedLaunchObservation,
         device: AndroidDevice,
-        restorePlan: ScreenRecordingRestorePlan
+        restorePlan: ScreenRecordingRestorePlan,
+        capturesAudio: Bool,
+        insertionIndex: Int?
     ) {
         let session = PhoneControlSession(
             deviceSerial: device.serial,
             deviceTitle: device.title,
-            processIdentifier: observation.processIdentifier
+            processIdentifier: observation.processIdentifier,
+            capturesAudio: capturesAudio
         )
         phoneControlMonitorTasks[device.serial]?.cancel()
         phoneControlStopRequests.remove(device.serial)
         phoneControlRestorePlans[device.serial] = restorePlan
         phoneControlSessions.removeAll { $0.deviceSerial == device.serial }
-        phoneControlSessions.append(session)
+        let safeInsertionIndex = min(max(insertionIndex ?? phoneControlSessions.count, 0), phoneControlSessions.count)
+        phoneControlSessions.insert(session, at: safeInsertionIndex)
         phoneControlCapabilityStates[device.serial] = .checking
         startScrcpyForegrounding(processIdentifier: observation.processIdentifier)
         PhoneControlCompanionWindowPresenter.show(
@@ -6954,6 +7194,8 @@ public final class AppModel: ObservableObject {
         guard let session = phoneControlSessions.first(where: { $0.processIdentifier == processIdentifier }) else {
             return
         }
+        phoneControlShutdownsInProgress.insert(session.deviceSerial)
+        defer { phoneControlShutdownsInProgress.remove(session.deviceSerial) }
 
         let stopWasRequested = phoneControlStopRequests.remove(session.deviceSerial) != nil
         let restorePlan = phoneControlRestorePlans.removeValue(forKey: session.deviceSerial)
@@ -8238,9 +8480,13 @@ public final class AppModel: ObservableObject {
         resumeAction: ToolSetupResumeAction = .none,
         force: Bool = false
     ) {
-        statusMessage = tool == .adb
-            ? "Phone tools need setup. File Transfer is still available."
-            : "Phone Control needs setup."
+        if tool == .adb {
+            statusMessage = "Phone tools need setup. File Transfer is still available."
+        } else if case .screenRecording = resumeAction {
+            statusMessage = "Screen recording audio needs Phone Tools setup."
+        } else {
+            statusMessage = "Phone Control needs setup."
+        }
         if force {
             suppressedToolSetup.remove(tool)
         } else if suppressedToolSetup.contains(tool) {
@@ -8272,7 +8518,13 @@ public final class AppModel: ObservableObject {
             case .adb:
                 try await adb.validateADB()
             case .scrcpy:
-                try await adb.validatePhoneControlTools()
+                if case .screenRecording(let deviceSerial) = request.resumeAction {
+                    let sources = captureDevices(for: .recording, explicitSerial: deviceSerial)
+                        .map { screenRecordingAudioOptions.phoneSource(for: $0.serial) }
+                    try await adb.validateScreenRecordingAudioTools(audioSources: sources)
+                } else {
+                    try await adb.validatePhoneControlTools()
+                }
             }
             completeToolSetup(request)
             return true
@@ -8318,6 +8570,8 @@ public final class AppModel: ObservableObject {
             await refreshDevices()
         case .phoneControl:
             await launchScrcpy()
+        case .screenRecording(let deviceSerial):
+            await startScreenRecording(deviceSerial: deviceSerial)
         }
     }
 

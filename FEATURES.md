@@ -62,7 +62,8 @@ Phone Tools are available with Developer Options enabled.
 - **Take screenshots.** Capture one or more connected displays. Multiple displays
   are saved side by side in one image.
 - **Record the screen.** Record one or more connected displays. Multiple displays
-  are saved side by side in one video.
+  are saved side by side in one video. Choose system audio, the phone microphone,
+  or both for each display, and add the Mac's current system input when needed.
 - **Control one or more devices.** Open a separate live screen for each connected device. Every screen has its own Mac control bar for battery level, navigation, volume, rotation, screenshots, and power.
 - **Tune each device window.** Choose audio, input, clipboard, frame rate, video format, screen behavior, and window placement for each connected device.
 

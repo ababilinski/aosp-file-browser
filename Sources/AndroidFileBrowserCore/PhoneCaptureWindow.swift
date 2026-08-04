@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 
 @MainActor
@@ -169,13 +170,17 @@ struct PhoneCaptureControlsView: View {
     let mode: PhoneCaptureMode
     @State private var now = Date()
     @State private var isRecordingSettingsExpanded = false
+    @State private var isAudioSettingsExpanded: Bool
     @State private var isVideoSettingsExpanded = false
+    @State private var macMicrophoneInputName: String?
 
     init(model: AppModel, presentation: PhoneCaptureControlsPresentation, mode: PhoneCaptureMode) {
         self.model = model
         self.settings = model.settings
         self.presentation = presentation
         self.mode = mode
+        _isAudioSettingsExpanded = State(initialValue: mode == .recording)
+        _macMicrophoneInputName = State(initialValue: MacMicrophoneCaptureService.defaultInputName)
     }
 
     var body: some View {
@@ -197,6 +202,12 @@ struct PhoneCaptureControlsView: View {
 
                     if mode != .phoneControl, !readyPhoneControlDevices.isEmpty {
                         captureDevicesCard
+                    }
+
+                    if mode == .recording, !readyPhoneControlDevices.isEmpty {
+                        audioSettings
+                            .disabled(recordingSettingsAreLocked)
+                            .opacity(recordingSettingsAreLocked ? 0.62 : 1)
                     }
 
                     if mode == .phoneControl, !readyPhoneControlDevices.isEmpty {
@@ -234,6 +245,15 @@ struct PhoneCaptureControlsView: View {
         }
         .preferredColorScheme(settings.appearanceMode.colorScheme)
         .onReceive(Self.timer) { now = $0 }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshMacMicrophoneInput()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVCaptureDevice.wasConnectedNotification)) { _ in
+            refreshMacMicrophoneInput()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVCaptureDevice.wasDisconnectedNotification)) { _ in
+            refreshMacMicrophoneInput()
+        }
     }
 
     private var popoverHeight: CGFloat {
@@ -422,6 +442,15 @@ struct PhoneCaptureControlsView: View {
                     }
                     if model.phoneControlSession != nil {
                         Label("Phone Control", systemImage: "rectangle.connected.to.line.below")
+                    }
+                    let audioSourceCount = session.audioOptions.sourceCount(
+                        for: Set(session.deviceSerials)
+                    )
+                    if audioSourceCount > 0 {
+                        Label(
+                            "\(audioSourceCount) audio source\(audioSourceCount == 1 ? "" : "s")",
+                            systemImage: "waveform"
+                        )
                     }
                 }
                 .font(.caption)
@@ -723,6 +752,115 @@ struct PhoneCaptureControlsView: View {
         }
     }
 
+    private var audioSettings: some View {
+        CaptureDisclosureSection(
+            title: "Audio",
+            summary: audioSettingsSummary,
+            systemImage: "waveform",
+            isExpanded: $isAudioSettingsExpanded
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(selectedRecordingDevices) { device in
+                    VStack(alignment: .leading, spacing: 9) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(device.title)
+                                .fontWeight(.semibold)
+                            Text(device.serial)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        HStack(spacing: 22) {
+                            Toggle(
+                                "System audio",
+                                isOn: phoneSystemAudioBinding(for: device.serial)
+                            )
+                            .toggleStyle(.checkbox)
+                            .accessibilityLabel("System audio for \(device.title)")
+                            .accessibilityIdentifier("screen-recording-system-audio-\(device.serial)")
+
+                            Toggle(
+                                "Microphone",
+                                isOn: phoneMicrophoneBinding(for: device.serial)
+                            )
+                            .toggleStyle(.checkbox)
+                            .accessibilityLabel("Phone microphone for \(device.title)")
+                            .accessibilityIdentifier("screen-recording-phone-microphone-\(device.serial)")
+
+                            Spacer(minLength: 0)
+                        }
+
+                        if phoneControlAudioConflict(for: device.serial) {
+                            HStack(spacing: 10) {
+                                Label(
+                                    "Phone Control is using this phone's audio.",
+                                    systemImage: "exclamationmark.triangle.fill"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+
+                                Spacer(minLength: 8)
+
+                                Button {
+                                    Task {
+                                        await model.restartPhoneControlWithoutAudioForRecording(
+                                            deviceSerial: device.serial
+                                        )
+                                    }
+                                } label: {
+                                    if model.phoneControlsRestartingWithoutAudio.contains(device.serial) {
+                                        HStack(spacing: 6) {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                            Text("Restarting...")
+                                        }
+                                    } else {
+                                        Text("Restart Without Audio")
+                                    }
+                                }
+                                .controlSize(.small)
+                                .disabled(model.hasPhoneControlTransitionInProgress)
+                                .accessibilityLabel("Restart Phone Control for \(device.title) without audio")
+                            }
+
+                            Text("Phone Control will reopen without sound so the recording can use this source. Reopen it after recording to restore audio.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Divider()
+
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("This Mac")
+                            .fontWeight(.semibold)
+                        Text(macMicrophoneInputDetail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    Toggle(
+                        "Microphone",
+                        isOn: macMicrophoneBinding
+                    )
+                    .toggleStyle(.checkbox)
+                    .disabled(macMicrophoneInputName == nil)
+                    .accessibilityLabel("Mac microphone")
+                    .accessibilityIdentifier("screen-recording-mac-microphone")
+                }
+
+                Text("System audio requires Android 11 or later and is muted on the phone while recording. Some phones may not support system audio and microphone together. The Mac uses the input selected in System Settings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private var videoSettings: some View {
         CaptureDisclosureSection(
             title: "Video Settings",
@@ -816,14 +954,18 @@ struct PhoneCaptureControlsView: View {
             || model.isStartingScreenRecording
             || model.isFinishingScreenRecording
             || model.screenRecordingSession != nil
+            || model.hasPhoneControlTransitionInProgress
     }
 
     private var recordingActionIsDisabled: Bool {
         model.selectedCaptureDeviceSerials(for: .recording).isEmpty
             || model.isCapturingScreenshot
+            || model.isLaunchingScrcpy
             || model.isStartingScreenRecording
             || model.isFinishingScreenRecording
             || model.screenRecordingSession != nil
+            || model.hasPhoneControlTransitionInProgress
+            || hasPhoneControlAudioConflict
     }
 
     private var phoneControlActionIsDisabled: Bool {
@@ -832,6 +974,7 @@ struct PhoneCaptureControlsView: View {
             || model.isLaunchingScrcpy
             || model.isStartingScreenRecording
             || model.isFinishingScreenRecording
+            || model.hasPhoneControlTransitionInProgress
     }
 
     private var captureTransitionIsRunning: Bool {
@@ -839,6 +982,7 @@ struct PhoneCaptureControlsView: View {
             || model.isLaunchingScrcpy
             || model.isStartingScreenRecording
             || model.isFinishingScreenRecording
+            || model.hasPhoneControlTransitionInProgress
     }
 
     private var displaySettingsTitle: String {
@@ -895,6 +1039,82 @@ struct PhoneCaptureControlsView: View {
             return "\(selectedOptions.effectiveFixedDurationSeconds) seconds"
         }
         return "Until stopped"
+    }
+
+    private var selectedRecordingDevices: [AndroidDevice] {
+        let selectedSerials = model.selectedCaptureDeviceSerials(for: .recording)
+        return readyPhoneControlDevices.filter { selectedSerials.contains($0.serial) }
+    }
+
+    private var audioSettingsSummary: String {
+        let selectedSerials = Set(selectedRecordingDevices.map(\.serial))
+        let count = model.screenRecordingAudioOptions.sourceCount(for: selectedSerials)
+        return count == 0 ? "Off" : "\(count) source\(count == 1 ? "" : "s")"
+    }
+
+    private func phoneSystemAudioBinding(for deviceSerial: String) -> Binding<Bool> {
+        Binding(
+            get: {
+                model.screenRecordingPhoneAudioSource(for: deviceSerial).capturesSystemAudio
+            },
+            set: { capturesSystemAudio in
+                let current = model.screenRecordingPhoneAudioSource(for: deviceSerial)
+                model.setScreenRecordingPhoneAudioSource(
+                    PhoneRecordingAudioSource(
+                        capturesSystemAudio: capturesSystemAudio,
+                        capturesPhoneMicrophone: current.capturesPhoneMicrophone
+                    ),
+                    for: deviceSerial
+                )
+            }
+        )
+    }
+
+    private func phoneMicrophoneBinding(for deviceSerial: String) -> Binding<Bool> {
+        Binding(
+            get: {
+                model.screenRecordingPhoneAudioSource(for: deviceSerial).capturesPhoneMicrophone
+            },
+            set: { capturesPhoneMicrophone in
+                let current = model.screenRecordingPhoneAudioSource(for: deviceSerial)
+                model.setScreenRecordingPhoneAudioSource(
+                    PhoneRecordingAudioSource(
+                        capturesSystemAudio: current.capturesSystemAudio,
+                        capturesPhoneMicrophone: capturesPhoneMicrophone
+                    ),
+                    for: deviceSerial
+                )
+            }
+        )
+    }
+
+    private var hasPhoneControlAudioConflict: Bool {
+        selectedRecordingDevices.contains { device in
+            phoneControlAudioConflict(for: device.serial)
+        }
+    }
+
+    private func phoneControlAudioConflict(for deviceSerial: String) -> Bool {
+        model.screenRecordingPhoneAudioSource(for: deviceSerial) != .none
+            && model.phoneControlSession(for: deviceSerial)?.capturesAudio == true
+    }
+
+    private var macMicrophoneInputDetail: String {
+        if let name = macMicrophoneInputName {
+            return "System input: \(name)"
+        }
+        return "No microphone available"
+    }
+
+    private func refreshMacMicrophoneInput() {
+        macMicrophoneInputName = MacMicrophoneCaptureService.defaultInputName
+    }
+
+    private var macMicrophoneBinding: Binding<Bool> {
+        Binding(
+            get: { model.screenRecordingAudioOptions.capturesMacMicrophone },
+            set: { model.screenRecordingAudioOptions.capturesMacMicrophone = $0 }
+        )
     }
 
     private var selectedOptions: ScreenRecordingOptions {

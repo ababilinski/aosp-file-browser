@@ -1703,6 +1703,101 @@ public enum ScreenRecordingDeviceAppearance: String, CaseIterable, Identifiable,
     }
 }
 
+public enum PhoneRecordingAudioSource: String, CaseIterable, Identifiable, Sendable {
+    case none
+    case deviceAudio
+    case phoneMicrophone
+    case deviceAndMicrophone
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .none: "None"
+        case .deviceAudio: "System audio"
+        case .phoneMicrophone: "Phone microphone"
+        case .deviceAndMicrophone: "System audio + microphone"
+        }
+    }
+
+    public init(capturesSystemAudio: Bool, capturesPhoneMicrophone: Bool) {
+        switch (capturesSystemAudio, capturesPhoneMicrophone) {
+        case (false, false): self = .none
+        case (true, false): self = .deviceAudio
+        case (false, true): self = .phoneMicrophone
+        case (true, true): self = .deviceAndMicrophone
+        }
+    }
+
+    public var capturesSystemAudio: Bool {
+        self == .deviceAudio || self == .deviceAndMicrophone
+    }
+
+    public var capturesPhoneMicrophone: Bool {
+        self == .phoneMicrophone || self == .deviceAndMicrophone
+    }
+
+    var scrcpyAudioSource: String? {
+        switch self {
+        case .none: nil
+        case .deviceAudio: "output"
+        case .phoneMicrophone: "mic"
+        case .deviceAndMicrophone: "voice-performance"
+        }
+    }
+}
+
+public struct ScreenRecordingAudioOptions: Equatable, Sendable {
+    public var phoneSourcesByDeviceSerial: [String: PhoneRecordingAudioSource]
+    public var capturesMacMicrophone: Bool
+
+    public init(
+        phoneSourcesByDeviceSerial: [String: PhoneRecordingAudioSource] = [:],
+        capturesMacMicrophone: Bool = false
+    ) {
+        self.phoneSourcesByDeviceSerial = phoneSourcesByDeviceSerial
+        self.capturesMacMicrophone = capturesMacMicrophone
+    }
+
+    public func phoneSource(for deviceSerial: String) -> PhoneRecordingAudioSource {
+        phoneSourcesByDeviceSerial[deviceSerial] ?? .none
+    }
+
+    public mutating func setPhoneSource(_ source: PhoneRecordingAudioSource, for deviceSerial: String) {
+        if source == .none {
+            phoneSourcesByDeviceSerial[deviceSerial] = nil
+        } else {
+            phoneSourcesByDeviceSerial[deviceSerial] = source
+        }
+    }
+
+    public func limited(to deviceSerials: Set<String>) -> ScreenRecordingAudioOptions {
+        ScreenRecordingAudioOptions(
+            phoneSourcesByDeviceSerial: phoneSourcesByDeviceSerial.filter {
+                deviceSerials.contains($0.key) && $0.value != .none
+            },
+            capturesMacMicrophone: capturesMacMicrophone
+        )
+    }
+
+    public func sourceCount(for deviceSerials: Set<String>) -> Int {
+        phoneSourcesByDeviceSerial.reduce(into: capturesMacMicrophone ? 1 : 0) { count, entry in
+            if deviceSerials.contains(entry.key) {
+                if entry.value.capturesSystemAudio {
+                    count += 1
+                }
+                if entry.value.capturesPhoneMicrophone {
+                    count += 1
+                }
+            }
+        }
+    }
+
+    public var hasPhoneAudio: Bool {
+        phoneSourcesByDeviceSerial.values.contains { $0 != .none }
+    }
+}
+
 public enum CaptureResolutionPreset: String, CaseIterable, Identifiable, Sendable {
     case native
     case hd720
@@ -1810,6 +1905,19 @@ public struct ScreenRecordingOptions: Equatable, Sendable {
         resolutionPreset.screenRecordSize(width: effectiveCustomWidth, height: effectiveCustomHeight)
     }
 
+    public var requestedRecordingSize: CGSize? {
+        switch resolutionPreset {
+        case .native:
+            nil
+        case .hd720:
+            CGSize(width: 1_280, height: 720)
+        case .fullHD1080:
+            CGSize(width: 1_920, height: 1_080)
+        case .custom:
+            CGSize(width: effectiveCustomWidth, height: effectiveCustomHeight)
+        }
+    }
+
     public var scrcpyMaxSize: Int? {
         resolutionPreset.scrcpyMaxSize(width: effectiveCustomWidth, height: effectiveCustomHeight)
     }
@@ -1836,6 +1944,7 @@ public struct ScreenRecordingSession: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let devices: [ScreenRecordingDeviceSession]
     public let options: ScreenRecordingOptions
+    public let audioOptions: ScreenRecordingAudioOptions
 
     public var deviceSerial: String { devices.first?.deviceSerial ?? "" }
     public var deviceSerials: [String] { devices.map(\.deviceSerial) }
@@ -1849,7 +1958,8 @@ public struct ScreenRecordingSession: Identifiable, Equatable, Sendable {
         deviceSerial: String,
         deviceTitle: String,
         startedAt: Date = Date(),
-        options: ScreenRecordingOptions
+        options: ScreenRecordingOptions,
+        audioOptions: ScreenRecordingAudioOptions = ScreenRecordingAudioOptions()
     ) {
         self.id = id
         self.devices = [ScreenRecordingDeviceSession(
@@ -1858,16 +1968,19 @@ public struct ScreenRecordingSession: Identifiable, Equatable, Sendable {
             startedAt: startedAt
         )]
         self.options = options
+        self.audioOptions = audioOptions
     }
 
     public init(
         id: UUID = UUID(),
         devices: [ScreenRecordingDeviceSession],
-        options: ScreenRecordingOptions
+        options: ScreenRecordingOptions,
+        audioOptions: ScreenRecordingAudioOptions = ScreenRecordingAudioOptions()
     ) {
         self.id = id
         self.devices = devices
         self.options = options
+        self.audioOptions = audioOptions
     }
 }
 
@@ -1960,6 +2073,7 @@ public struct PhoneControlSession: Identifiable, Equatable, Sendable {
     public let deviceSerial: String
     public let deviceTitle: String
     public let processIdentifier: Int32
+    public let capturesAudio: Bool
     public let startedAt: Date
 
     public init(
@@ -1967,12 +2081,14 @@ public struct PhoneControlSession: Identifiable, Equatable, Sendable {
         deviceSerial: String,
         deviceTitle: String,
         processIdentifier: Int32,
+        capturesAudio: Bool = true,
         startedAt: Date = Date()
     ) {
         self.id = id
         self.deviceSerial = deviceSerial
         self.deviceTitle = deviceTitle
         self.processIdentifier = processIdentifier
+        self.capturesAudio = capturesAudio
         self.startedAt = startedAt
     }
 }
@@ -2025,10 +2141,11 @@ struct ArchiveCreationRequest: Identifiable, Hashable, Sendable {
     let defaultName: String
 }
 
-public enum ToolSetupResumeAction: Sendable {
+public enum ToolSetupResumeAction: Equatable, Sendable {
     case none
     case refreshDevices
     case phoneControl
+    case screenRecording(deviceSerial: String?)
 }
 
 public struct ToolSetupRequest: Identifiable, Sendable {
