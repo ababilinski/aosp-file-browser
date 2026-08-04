@@ -1,0 +1,338 @@
+/* Dark appearance overrides. System mode uses the link media query; site-theme.js handles manual choices. */
+
+:root {
+  color-scheme: dark;
+  --canvas: #000000;
+  --surface: #121214;
+  --surface-raised: #1d1d1f;
+  --ink: #f5f5f7;
+  --muted: #a1a1a6;
+  --tertiary: #86868b;
+  --line: rgba(255, 255, 255, 0.14);
+  --accent: #5ad79a;
+  --accent-hover: #76e4ae;
+  --accent-soft: #0d2117;
+  --link: #2997ff;
+  --link-hover: #6ab8ff;
+  --action: #0071e3;
+  --action-hover: #006edb;
+  --blue-soft: #0e1c28;
+  --black: #000000;
+  --dark-card: #1d1d1f;
+  --window-shadow: 0 40px 120px rgba(0, 0, 0, 0.72);
+}
+
+.nav-action,
+.button-primary,
+.notice-primary-link {
+  background: var(--action);
+}
+
+.nav-action:hover,
+.button-primary:hover,
+.notice-primary-link:hover {
+  background: var(--action-hover);
+}
+
+body {
+  background: var(--canvas);
+}
+
+:focus-visible {
+  outline-color: var(--link);
+}
+
+.site-header {
+  border-bottom-color: rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.76);
+  backdrop-filter: saturate(140%) blur(24px);
+  -webkit-backdrop-filter: saturate(140%) blur(24px);
+  box-shadow: none;
+}
+
+.breadcrumb-separator,
+.nav-links {
+  color: var(--muted);
+}
+
+.nav-links a:hover,
+.nav-links .is-current {
+  color: var(--ink);
+}
+
+.breadcrumb-home img {
+  filter: grayscale(0.55) brightness(1.08) contrast(1.04);
+}
+
+.button-light {
+  border: 0;
+  background: var(--ink);
+  color: #1d1d1f;
+}
+
+.button-light:hover {
+  background: #ffffff;
+}
+
+.fact-row li + li::before {
+  background: var(--tertiary);
+}
+
+.hero {
+  position: relative;
+  isolation: isolate;
+}
+
+.hero::before {
+  position: absolute;
+  z-index: -1;
+  top: -54px;
+  left: 50%;
+  width: 100vw;
+  height: min(760px, 88%);
+  transform: translateX(-50%);
+  background:
+    radial-gradient(ellipse 48% 38% at 48% 100%, rgba(90, 215, 154, 0.045), transparent 72%),
+    radial-gradient(ellipse 34% 30% at 68% 96%, rgba(41, 151, 255, 0.04), transparent 76%);
+  content: "";
+  pointer-events: none;
+}
+
+.hero .eyebrow {
+  width: fit-content;
+  margin-right: auto;
+  margin-left: auto;
+  background: linear-gradient(90deg, #a7f0cb 0%, var(--accent) 52%, #78a9c8 100%);
+  background-clip: text;
+  color: transparent;
+  -webkit-background-clip: text;
+}
+
+.hero-window,
+.stage img,
+.product-card img,
+.storage-card img,
+.tools-window img,
+.tools-product-card > img {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.hero-window {
+  background: var(--surface-raised);
+}
+
+.hero-window,
+.stage,
+.tools-window {
+  box-shadow: var(--window-shadow);
+}
+
+.stage img,
+.product-card img,
+.storage-card img,
+.tools-window img,
+.tools-product-card > img {
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.48);
+}
+
+.stage-blue {
+  border: 1px solid rgba(120, 169, 200, 0.13);
+  background: linear-gradient(145deg, #102331 0%, var(--blue-soft) 44%, #080d11 100%);
+}
+
+.stage-green {
+  border: 1px solid rgba(90, 215, 154, 0.13);
+  background: linear-gradient(145deg, #112a1d 0%, var(--accent-soft) 48%, #080d0a 100%);
+}
+
+.product-card,
+.tool-card,
+.tools-product-card {
+  background: var(--surface-raised);
+}
+
+.preview-card,
+.tools-trash-card {
+  background: #1b1a1d;
+}
+
+.chapter-transfer,
+.help-page .help-section {
+  background: var(--canvas);
+}
+
+.storage-card,
+.tools-window-green {
+  border: 1px solid rgba(90, 215, 154, 0.12);
+  background: linear-gradient(145deg, #10251a 0%, var(--accent-soft) 62%, #0a100c 100%);
+}
+
+.connection-option,
+.debug-options article {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.connection-option:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: #242426;
+}
+
+.privacy-facts,
+.privacy-detail > p,
+.requirements-band ul,
+.path-callout div > p:last-child,
+.path-callout-wifi div > p:last-child,
+.android-control-band > p:last-child,
+.legal-note p {
+  color: var(--muted);
+}
+
+.privacy-facts li + li::before,
+.requirements-band li + li::before {
+  background: var(--tertiary);
+}
+
+.path-option:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.path-option.is-selected {
+  border-color: rgba(41, 151, 255, 0.58);
+  background: #0c1520;
+  box-shadow: inset 0 0 0 1px rgba(41, 151, 255, 0.08);
+}
+
+.path-option.is-selected .path-number {
+  color: var(--link);
+}
+
+.feature-dash {
+  color: var(--tertiary);
+}
+
+.notice-intro > p:not(.legal-updated),
+.legal-content p,
+.legal-content li {
+  color: #c7c7cc;
+}
+
+.notice-toc a:hover {
+  border-color: rgba(41, 151, 255, 0.45);
+  background: #0d1a26;
+  color: var(--link-hover);
+}
+
+.notice-component {
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.22);
+}
+
+.notice-component-featured {
+  background: linear-gradient(145deg, #0f1c14 0%, var(--surface-raised) 64%);
+}
+
+.notice-monogram {
+  background: #153523;
+  color: var(--accent);
+}
+
+.notice-monogram-blue {
+  background: #152b3a;
+  color: #76c7fa;
+}
+
+.notice-monogram-purple {
+  background: #2b2036;
+  color: #c59be9;
+}
+
+.copyright-explainer,
+.notice-source-note {
+  color: var(--muted) !important;
+}
+
+.android-brand-section blockquote {
+  background: #10231a;
+  color: #d2d2d7;
+}
+
+.text-link,
+.faq-section .help-list a,
+.legal-content a,
+.notice-link-row a {
+  color: var(--link);
+}
+
+.text-link:hover,
+.faq-section .help-list a:hover,
+.legal-content a:hover,
+.notice-link-row a:hover {
+  color: var(--link-hover);
+}
+
+.text-link span {
+  transition: transform 180ms ease;
+}
+
+.text-link:hover span {
+  transform: translateX(2px);
+}
+
+.help-list summary::after {
+  color: var(--link);
+}
+
+.section-intro-light .eyebrow,
+.option-label,
+.setup-debug .eyebrow,
+.debug-options article > span,
+.tool-card-wide .eyebrow,
+.phone-tools-hero .eyebrow,
+.control-feature .eyebrow,
+.info-page-hero .eyebrow {
+  color: var(--accent);
+}
+
+.nav-action:hover,
+.button:hover,
+.connection-option:hover,
+.path-option:hover {
+  transform: none;
+}
+
+.site-footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.footer-shell .footer-breadcrumb {
+  border-bottom-color: var(--line);
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --muted: #d2d2d7;
+    --line: rgba(255, 255, 255, 0.28);
+  }
+
+  .hero .eyebrow {
+    background: none;
+    color: var(--accent);
+  }
+
+  .site-header {
+    border-bottom-color: rgba(255, 255, 255, 0.3);
+    background: #000000;
+  }
+
+  .connection-option,
+  .debug-options article {
+    border-color: rgba(255, 255, 255, 0.24);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .site-header {
+    background: #000000;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
