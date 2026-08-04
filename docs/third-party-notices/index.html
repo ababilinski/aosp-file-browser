@@ -3,13 +3,15 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" data-theme-color="light">
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" data-theme-color="dark">
     <title>Third-Party Notices — ASOP File Browser</title>
     <meta name="description" content="Licenses, official downloads, and attribution for third-party software used with ASOP File Browser.">
     <link rel="canonical" href="https://ababilinski.github.io/asop-file-browser/third-party-notices/">
     <link rel="icon" href="../assets/app-icon.png">
-    <link rel="stylesheet" href="../styles.css?v=20260726b">
+    <link rel="stylesheet" href="../styles.css?v=20260804a">
+    <link rel="stylesheet" href="../theme-dark.css?v=20260804a" media="(prefers-color-scheme: dark)" data-dark-theme-stylesheet>
+    <script src="../site-theme.js?v=20260804a"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
@@ -20,7 +22,7 @@
           <img src="../assets/app-icon.png" alt="" width="28" height="28">
           <span>ASOP File Browser</span>
         </a>
-        <nav class="nav-links" aria-label="Site navigation">
+        <nav class="nav-links" id="site-navigation" aria-label="Site navigation">
           <a href="../">Overview</a>
           <a href="../connect/">Connect</a>
           <a href="../phone-tools/">Phone Tools</a>
@@ -28,6 +30,11 @@
           <a href="https://github.com/ababilinski/asop-file-browser">GitHub</a>
         </nav>
         <a class="nav-action" href="https://github.com/ababilinski/asop-file-browser/releases">Check releases</a>
+        <button class="nav-menu-toggle" type="button" aria-expanded="false" aria-controls="site-navigation" aria-label="Open menu" title="Open menu" data-nav-menu-toggle hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h16M4 12h16M4 17h16"></path>
+          </svg>
+        </button>
       </div>
     </header>
 
@@ -280,6 +287,15 @@
         <div class="footer-owner">
           <p>© 2026 Adrian Babilinski</p>
           <span>Android is a trademark of Google LLC. This independent project is not affiliated with or endorsed by Google.</span>
+          <button class="theme-toggle" type="button" aria-pressed="false" aria-label="Dark mode" title="Change color theme" data-theme-toggle hidden>
+            <svg class="theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3.25"></circle>
+              <path d="M12 2.75v2M12 19.25v2M2.75 12h2M19.25 12h2M5.46 5.46l1.42 1.42M17.12 17.12l1.42 1.42M18.54 5.46l-1.42 1.42M6.88 17.12l-1.42 1.42"></path>
+            </svg>
+            <svg class="theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M19.35 15.24A8 8 0 0 1 8.76 4.65a8 8 0 1 0 10.59 10.59Z"></path>
+            </svg>
+          </button>
         </div>
         <div class="footer-links">
           <div class="footer-link-group">
