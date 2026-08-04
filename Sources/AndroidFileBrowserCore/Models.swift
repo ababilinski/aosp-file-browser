@@ -1557,6 +1557,33 @@ public struct TrashRecord: Identifiable, Hashable, Codable, Sendable {
         self.size = size
         self.kind = kind
     }
+
+    func assigned(toDeviceIdentity deviceIdentity: String) -> TrashRecord {
+        TrashRecord(
+            id: id,
+            deviceSerial: deviceIdentity,
+            originalPath: originalPath,
+            trashPath: trashPath,
+            name: name,
+            deletedAt: deletedAt,
+            size: size,
+            kind: kind
+        )
+    }
+}
+
+public struct TrashDeviceScope: Equatable, Sendable {
+    public let identity: String
+    public let legacyIdentifiers: Set<String>
+
+    public init(identity: String, legacyIdentifiers: Set<String> = []) {
+        self.identity = identity
+        self.legacyIdentifiers = legacyIdentifiers
+    }
+
+    func contains(_ identifier: String) -> Bool {
+        identifier == identity || legacyIdentifiers.contains(identifier)
+    }
 }
 
 struct TrashSessionSnapshot: Sendable {

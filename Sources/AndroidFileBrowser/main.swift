@@ -357,7 +357,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let summary = "\(remainingRecords.count) item\(remainingRecords.count == 1 ? " remains" : "s remain") in Trash. Reconnect the device named beside each item and try again."
         let failuresByRecordID = Dictionary(uniqueKeysWithValues: result.failures.map { ($0.record.id, $0.message) })
         let details = remainingRecords.prefix(4).map { record in
-            let deviceName = model.devices.first(where: { $0.serial == record.deviceSerial })?.title ?? record.deviceSerial
+            let deviceName = model.selectedDevice?.title ?? "Selected phone"
             let message = failuresByRecordID[record.id] ?? "This item was added while Trash was being emptied."
             return "• \(record.name) — \(deviceName): \(message)"
         }.joined(separator: "\n")

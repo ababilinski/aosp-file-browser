@@ -22,6 +22,8 @@ public struct AppCacheUsage: Equatable, Sendable {
 public actor AppCacheStore {
     public static let thumbnailFolderName = "AndroidFileBrowserThumbnails"
     public static let runtimePreviewFolderName = "AndroidFileBrowserPreviewRuntime"
+    public static let trashPreviewFolderName = "AndroidFileBrowserTrashPreviews"
+    private static let trashPrivacyMigrationMarkerName = ".AndroidFileBrowserTrashPrivacy-v1"
 
     public static let previewFolderNames: [String] = [
         "AndroidFileBrowserPreviews",
@@ -32,6 +34,7 @@ public actor AppCacheStore {
         "AndroidFileBrowserArchives",
         "AndroidFileBrowserUSBTransferArchives",
         "AndroidFileBrowserAPKIcons",
+        trashPreviewFolderName,
         runtimePreviewFolderName
     ]
 
@@ -69,8 +72,18 @@ public actor AppCacheStore {
             data.count == 32 ? SymmetricKey(data: data) : nil
         }
 
+        // Older releases stored Trash previews and thumbnails in the shared
+        // caches. They cannot be identified safely if legacy metadata is
+        // damaged or its key is unavailable, so discard those disposable
+        // shared caches once when adopting device-bound Trash storage.
+        Self.removeLegacyTrashCachesOnce(in: root)
         let runtimeRoot = root.appending(path: Self.runtimePreviewFolderName, directoryHint: .isDirectory)
         Self.removeAbandonedRuntimeSessions(in: runtimeRoot)
+        // Trash previews are intentionally session-only. A prior crash must not
+        // leave content from a disconnected phone available on the next launch.
+        try? FileManager.default.removeItem(
+            at: root.appending(path: Self.trashPreviewFolderName, directoryHint: .isDirectory)
+        )
         try? Self.createPrivateDirectory(runtimeSessionDirectory)
     }
 
@@ -106,6 +119,52 @@ public actor AppCacheStore {
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try Self.createPrivateDirectory(directory)
         return directory
+    }
+
+    public func trashPreviewURL(deviceIdentity: String, cacheName: String) throws -> URL {
+        let directory = trashPreviewDirectory(deviceIdentity: deviceIdentity)
+        try Self.createPrivateDirectory(directory)
+        return directory.appending(path: (cacheName as NSString).lastPathComponent)
+    }
+
+    public func clearTrashPreviewFiles(deviceIdentity: String) throws {
+        let directory = trashPreviewDirectory(deviceIdentity: deviceIdentity)
+        releaseReadablePreviews(backedByDescendantsOf: directory)
+        if FileManager.default.fileExists(atPath: directory.path) {
+            try FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    public func clearAllTrashPreviewFiles() throws {
+        let directory = cacheRoot.appending(path: Self.trashPreviewFolderName, directoryHint: .isDirectory)
+        releaseReadablePreviews(backedByDescendantsOf: directory)
+        if FileManager.default.fileExists(atPath: directory.path) {
+            try FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    public func removeLegacyTrashPreviewFiles(cacheNames: Set<String>) {
+        guard !cacheNames.isEmpty else { return }
+        let directory = cacheRoot.appending(path: "AndroidFileBrowserPreviews", directoryHint: .isDirectory)
+        let backingPaths = Set(cacheNames.flatMap { name -> [String] in
+            let cacheURL = directory.appending(path: (name as NSString).lastPathComponent)
+            return [
+                cacheURL.standardizedFileURL.path,
+                Self.encryptedURL(for: cacheURL).standardizedFileURL.path
+            ]
+        })
+
+        let readablePaths = backingPathByReadablePath.compactMap { entry in
+            backingPaths.contains(entry.value) ? entry.key : nil
+        }
+        for readablePath in readablePaths {
+            try? FileManager.default.removeItem(atPath: readablePath)
+            leaseCounts[readablePath] = nil
+            backingPathByReadablePath[readablePath] = nil
+        }
+        for path in backingPaths {
+            try? FileManager.default.removeItem(atPath: path)
+        }
     }
 
     public func storePreview(from sourceURL: URL, at cacheURL: URL, encrypt: Bool) throws {
@@ -272,6 +331,27 @@ public actor AppCacheStore {
 
     private var activeProtectedPaths: Set<String> {
         Set(leaseCounts.keys).union(backingPathByReadablePath.values)
+    }
+
+    private func trashPreviewDirectory(deviceIdentity: String) -> URL {
+        let digest = SHA256.hash(data: Data(deviceIdentity.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return cacheRoot
+            .appending(path: Self.trashPreviewFolderName, directoryHint: .isDirectory)
+            .appending(path: digest, directoryHint: .isDirectory)
+    }
+
+    private func releaseReadablePreviews(backedByDescendantsOf directory: URL) {
+        let root = directory.standardizedFileURL.path
+        let readablePaths = backingPathByReadablePath.compactMap { entry in
+            entry.value == root || entry.value.hasPrefix(root + "/") ? entry.key : nil
+        }
+        for readablePath in readablePaths {
+            try? FileManager.default.removeItem(atPath: readablePath)
+            leaseCounts[readablePath] = nil
+            backingPathByReadablePath[readablePath] = nil
+        }
     }
 
     private func retain(readableURL: URL, backingURL: URL) {
@@ -517,6 +597,25 @@ public actor AppCacheStore {
             }
             if pid == currentPID || processIsRunning(pid) { continue }
             try? fileManager.removeItem(at: session)
+        }
+    }
+
+    private static func removeLegacyTrashCachesOnce(in root: URL) {
+        let marker = root.appending(path: trashPrivacyMigrationMarkerName)
+        guard !FileManager.default.fileExists(atPath: marker.path) else { return }
+
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            for folderName in ["AndroidFileBrowserPreviews", thumbnailFolderName] {
+                let folder = root.appending(path: folderName, directoryHint: .isDirectory)
+                if FileManager.default.fileExists(atPath: folder.path) {
+                    try FileManager.default.removeItem(at: folder)
+                }
+            }
+            try Data("1".utf8).write(to: marker, options: .atomic)
+            try makePrivateFile(marker)
+        } catch {
+            // A missing marker retries the privacy cleanup on the next launch.
         }
     }
 
