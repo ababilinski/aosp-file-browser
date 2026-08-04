@@ -112,6 +112,32 @@ final class AppModelDeviceSessionTests: XCTestCase {
 
         installTask.cancel()
         await installTask.value
+        XCTAssertFalse(model.isInstallingAppPackage)
+        XCTAssertFalse(model.isAppPackageInstallInProgress)
+    }
+
+    func testQueuedAppInstallDoesNotUseDirectInstallPresentationState() async throws {
+        let runner = SlowAppLoadingProcessRunner()
+        let model = makeModel(runner: runner)
+        let jobID = model.transferQueue.enqueue(
+            kind: .appInstall,
+            title: "Queued.apk",
+            subtitle: "Waiting to install",
+            source: TransferEndpoint(kind: .mac, path: "/tmp/Queued.apk"),
+            destination: TransferEndpoint(kind: .adb, deviceID: "first-device", path: "apps")
+        ) { _ in
+            try await Task.sleep(for: .seconds(10))
+            return TransferJobResult(message: "Installed")
+        }
+
+        XCTAssertTrue(model.isAppPackageInstallInProgress)
+        XCTAssertFalse(model.isInstallingAppPackage)
+
+        model.transferQueue.cancel(jobID: jobID)
+        try await waitUntil(timeout: .seconds(2)) {
+            model.transferQueue.job(id: jobID)?.state == .canceled
+        }
+        XCTAssertFalse(model.isAppPackageInstallInProgress)
     }
 
     func testPollingRefreshesBatteryForEveryConnectedADBDevice() async throws {

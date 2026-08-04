@@ -52,6 +52,16 @@ public struct RootView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
         }
+        .overlay(alignment: .top) {
+            if model.isInstallingAppPackage {
+                DirectAppInstallProgressNotification(statusMessage: model.statusMessage)
+                    .padding(.top, 12)
+                    .padding(.horizontal, 16)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(10)
+            }
+        }
+        .animation(.snappy(duration: 0.22), value: model.isInstallingAppPackage)
         .localFileDropTarget(
             isEnabled: !model.isAppPackageInstallInProgress,
             acceptsDrop: AppPackageInstaller.isSupportedSelection
