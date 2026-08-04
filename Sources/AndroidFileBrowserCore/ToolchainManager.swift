@@ -167,7 +167,12 @@ public actor ManagedToolchainInstaller {
         rootURL.appending(path: release.installationDirectoryName, directoryHint: .isDirectory)
     }
 
-    public func install() async throws -> ManagedToolchainInstallation {
+    public func install(
+        tools requestedTools: Set<ToolchainTool> = Set(ToolchainTool.allCases)
+    ) async throws -> ManagedToolchainInstallation {
+        guard !requestedTools.isEmpty else {
+            throw ToolchainInstallError.validationFailed("Choose at least one tool to install.")
+        }
         try Task.checkCancellation()
         do {
             try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
@@ -238,7 +243,11 @@ public actor ManagedToolchainInstaller {
         } catch {
             throw ToolchainInstallError.validationFailed("The downloaded tools could not be made executable.")
         }
-        try await validateExecutables(in: installation)
+        try await validateExecutables(in: installation, tools: requestedTools)
+        try preserveUnrequestedManagedTools(
+            in: installation,
+            requestedTools: requestedTools
+        )
 
         let record = ManagedToolchainInstallationRecord(
             version: release.version,
@@ -361,17 +370,61 @@ public actor ManagedToolchainInstaller {
         }
     }
 
-    private func validateExecutables(in installation: ManagedToolchainInstallation) async throws {
-        let adbResult = try await runWithTimeout(executable: installation.adbURL, arguments: ["version"], timeout: 8)
-        let adbOutput = adbResult.stdout + adbResult.stderr
-        guard adbResult.exitCode == 0, adbOutput.contains(release.adbVersionMarker) else {
-            throw ToolchainInstallError.validationFailed("ADB did not pass its version check.")
+    private func validateExecutables(
+        in installation: ManagedToolchainInstallation,
+        tools: Set<ToolchainTool>
+    ) async throws {
+        if tools.contains(.adb) {
+            let adbResult = try await runWithTimeout(executable: installation.adbURL, arguments: ["version"], timeout: 8)
+            let adbOutput = adbResult.stdout + adbResult.stderr
+            guard adbResult.exitCode == 0, adbOutput.contains(release.adbVersionMarker) else {
+                throw ToolchainInstallError.validationFailed("ADB did not pass its version check.")
+            }
         }
 
-        let scrcpyResult = try await runWithTimeout(executable: installation.scrcpyURL, arguments: ["--version"], timeout: 8)
-        let scrcpyOutput = scrcpyResult.stdout + scrcpyResult.stderr
-        guard scrcpyResult.exitCode == 0, scrcpyOutput.contains(release.scrcpyVersionMarker) else {
-            throw ToolchainInstallError.validationFailed("Phone Control did not pass its version check.")
+        if tools.contains(.scrcpy) {
+            let scrcpyResult = try await runWithTimeout(executable: installation.scrcpyURL, arguments: ["--version"], timeout: 8)
+            let scrcpyOutput = scrcpyResult.stdout + scrcpyResult.stderr
+            guard scrcpyResult.exitCode == 0, scrcpyOutput.contains(release.scrcpyVersionMarker) else {
+                throw ToolchainInstallError.validationFailed("Phone Control did not pass its version check.")
+            }
+        }
+    }
+
+    private func preserveUnrequestedManagedTools(
+        in installation: ManagedToolchainInstallation,
+        requestedTools: Set<ToolchainTool>
+    ) throws {
+        let existingDirectory = installationDirectoryURL
+        if !requestedTools.contains(.adb) {
+            try preserveExistingFileOrRemove(
+                stagedURL: installation.adbURL,
+                existingURL: existingDirectory.appending(path: "adb")
+            )
+        }
+        if !requestedTools.contains(.scrcpy) {
+            try preserveExistingFileOrRemove(
+                stagedURL: installation.scrcpyURL,
+                existingURL: existingDirectory.appending(path: "scrcpy")
+            )
+            try preserveExistingFileOrRemove(
+                stagedURL: installation.scrcpyServerURL,
+                existingURL: existingDirectory.appending(path: "scrcpy-server")
+            )
+        }
+    }
+
+    private func preserveExistingFileOrRemove(stagedURL: URL, existingURL: URL) throws {
+        if fileManager.fileExists(atPath: stagedURL.path) {
+            try fileManager.removeItem(at: stagedURL)
+        }
+        guard fileManager.fileExists(atPath: existingURL.path) else { return }
+        do {
+            try fileManager.copyItem(at: existingURL, to: stagedURL)
+        } catch {
+            throw ToolchainInstallError.validationFailed(
+                "The existing managed tool could not be preserved. The previous copy was kept."
+            )
         }
     }
 
@@ -465,7 +518,7 @@ public final class ToolchainManager: ObservableObject {
     }
 
     @discardableResult
-    public func installManagedTools() async -> Bool {
+    public func installManagedTools(for requestedTool: ToolchainTool? = nil) async -> Bool {
         guard !installationInProgress else { return false }
         guard let installer else {
             lastInstallError = ToolchainInstallError.unsupportedMac.localizedDescription
@@ -474,9 +527,11 @@ public final class ToolchainManager: ObservableObject {
         installationInProgress = true
         stateRevision += 1
         lastInstallError = nil
-        ToolchainTool.allCases.forEach { health[$0] = .installing }
+        let requestedTools = requestedTool.map { Set([$0]) }
+            ?? Set(ToolchainTool.allCases)
+        requestedTools.forEach { health[$0] = .installing }
         do {
-            _ = try await installer.install()
+            _ = try await installer.install(tools: requestedTools)
             installationInProgress = false
             await refresh()
             return true
@@ -515,6 +570,12 @@ public final class ToolchainManager: ObservableObject {
     public var hasManagedTools: Bool {
         guard let directory = ToolchainPaths.currentManagedToolchainDirectory() else { return false }
         return FileManager.default.fileExists(atPath: directory.path)
+    }
+
+    public func hasManagedTool(_ tool: ToolchainTool) -> Bool {
+        guard let directory = ToolchainPaths.currentManagedToolchainDirectory() else { return false }
+        let executable = directory.appending(path: tool.executableName)
+        return FileManager.default.isExecutableFile(atPath: executable.path)
     }
 
     private func checkHealth(for tool: ToolchainTool) async -> ToolchainHealth {

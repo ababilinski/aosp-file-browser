@@ -31,7 +31,10 @@ struct WirelessADBSetupSheet: View {
     }
 
     private var isBusy: Bool {
-        switch phase {
+        if model.updatingWirelessADBDeviceIDs.contains(deviceID) {
+            return true
+        }
+        return switch phase {
         case .enablingWirelessDebugging, .connecting:
             true
         default:
@@ -321,9 +324,18 @@ struct WirelessADBSetupSheet: View {
                 .keyboardShortcut(.defaultAction)
 
             case .connected:
+                Button("Disconnect Wi-Fi", role: .destructive) {
+                    Task { await model.disconnectADBWiFi(for: deviceID) }
+                }
+                .disabled(model.updatingWirelessADBDeviceIDs.contains(deviceID))
+                Button("Use USB") {
+                    Task { await model.switchADBConnectionToUSB(for: deviceID) }
+                }
+                .disabled(model.updatingWirelessADBDeviceIDs.contains(deviceID))
                 Button("Done") {
                     model.dismissWirelessADBSetup()
                 }
+                .disabled(model.updatingWirelessADBDeviceIDs.contains(deviceID))
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
 
