@@ -83,6 +83,48 @@ struct AppPackageDropOverlay: View {
     }
 }
 
+struct DirectAppInstallProgressNotification: View {
+    let statusMessage: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "arrow.down.app.fill")
+                .font(.title2)
+                .foregroundStyle(.tint)
+                .frame(width: 30, height: 30)
+                .background(
+                    Color.accentColor.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Installing App Package")
+                        .font(.headline)
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .tint(.accentColor)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(width: 420, alignment: .leading)
+        .liquidGlassPanel(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(0.16), radius: 20, y: 8)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("App installation in progress. \(statusMessage)")
+        .accessibilityIdentifier("app-install-progress")
+    }
+}
+
 private struct AppPackageDropSymbol: View {
     @State private var fallbackScale = 0.92
 
