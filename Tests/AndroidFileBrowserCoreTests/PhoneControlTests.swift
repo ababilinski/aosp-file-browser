@@ -176,6 +176,171 @@ final class PhoneControlTests: XCTestCase {
         ))
     }
 
+    func testCompanionBarsShareCombinedRecordingAndAudioPresentation() {
+        let first = AndroidDevice(
+            serial: "first",
+            state: .device,
+            model: "Pixel 9",
+            product: nil,
+            transport: nil
+        )
+        let second = AndroidDevice(
+            serial: "second",
+            state: .device,
+            model: "Google Betty EVT1",
+            product: nil,
+            transport: nil
+        )
+        let third = AndroidDevice(
+            serial: "third",
+            state: .device,
+            model: "Other Device",
+            product: nil,
+            transport: nil
+        )
+        let audioOptions = ScreenRecordingAudioOptions(
+            phoneSourcesByDeviceSerial: [
+                first.serial: .deviceAudio,
+                second.serial: .phoneMicrophone
+            ],
+            capturesMacMicrophone: true
+        )
+        let session = ScreenRecordingSession(
+            devices: [
+                ScreenRecordingDeviceSession(
+                    deviceSerial: first.serial,
+                    deviceTitle: first.title,
+                    startedAt: Date()
+                ),
+                ScreenRecordingDeviceSession(
+                    deviceSerial: second.serial,
+                    deviceTitle: second.title,
+                    startedAt: Date()
+                )
+            ],
+            options: ScreenRecordingOptions(),
+            audioOptions: audioOptions
+        )
+
+        let firstPresentation = PhoneControlCompanionRecordingPresentation.make(
+            deviceSerial: first.serial,
+            activeSession: session,
+            isStarting: false,
+            isFinishing: false,
+            requestedDeviceSerial: nil,
+            selectedDevices: [first, second],
+            pendingAudioOptions: ScreenRecordingAudioOptions()
+        )
+        let secondPresentation = PhoneControlCompanionRecordingPresentation.make(
+            deviceSerial: second.serial,
+            activeSession: session,
+            isStarting: false,
+            isFinishing: false,
+            requestedDeviceSerial: nil,
+            selectedDevices: [first, second],
+            pendingAudioOptions: ScreenRecordingAudioOptions()
+        )
+        let otherPresentation = PhoneControlCompanionRecordingPresentation.make(
+            deviceSerial: third.serial,
+            activeSession: session,
+            isStarting: false,
+            isFinishing: false,
+            requestedDeviceSerial: nil,
+            selectedDevices: [first, second],
+            pendingAudioOptions: ScreenRecordingAudioOptions()
+        )
+
+        for presentation in [firstPresentation, secondPresentation] {
+            XCTAssertEqual(presentation.activity, .recording)
+            XCTAssertTrue(presentation.isParticipant)
+            XCTAssertEqual(presentation.displayCount, 2)
+            XCTAssertEqual(presentation.statusText, "Recording · 2 screens")
+            XCTAssertEqual(presentation.recordingButtonHelp, "Stop and save the combined recording")
+            XCTAssertEqual(presentation.recordingButtonAccessibilityLabel, "Stop combined recording")
+            XCTAssertEqual(
+                presentation.audioSummary,
+                "Audio: Pixel 9: System audio, Google Betty EVT1: Phone microphone, Mac microphone"
+            )
+        }
+        XCTAssertEqual(otherPresentation.activity, .recording)
+        XCTAssertFalse(otherPresentation.isParticipant)
+        XCTAssertEqual(otherPresentation.statusText, "Not in active recording")
+        XCTAssertEqual(otherPresentation.recordingButtonHelp, "Another screen recording is in progress")
+    }
+
+    func testCompanionBarsShowChooserRecordingStartAndSharedSaveState() {
+        let first = AndroidDevice(
+            serial: "first",
+            state: .device,
+            model: "First Device",
+            product: nil,
+            transport: nil
+        )
+        let second = AndroidDevice(
+            serial: "second",
+            state: .device,
+            model: "Second Device",
+            product: nil,
+            transport: nil
+        )
+        let pendingAudio = ScreenRecordingAudioOptions(
+            phoneSourcesByDeviceSerial: [
+                first.serial: .deviceAudio,
+                second.serial: .deviceAudio
+            ]
+        )
+
+        for device in [first, second] {
+            let starting = PhoneControlCompanionRecordingPresentation.make(
+                deviceSerial: device.serial,
+                activeSession: nil,
+                isStarting: true,
+                isFinishing: false,
+                requestedDeviceSerial: nil,
+                selectedDevices: [first, second],
+                pendingAudioOptions: pendingAudio
+            )
+            XCTAssertEqual(starting.activity, .starting)
+            XCTAssertTrue(starting.isParticipant)
+            XCTAssertEqual(starting.statusText, "Starting · 2 screens")
+            XCTAssertEqual(
+                starting.audioSummary,
+                "Audio: First Device: System audio, Second Device: System audio"
+            )
+        }
+
+        let session = ScreenRecordingSession(
+            devices: [
+                ScreenRecordingDeviceSession(
+                    deviceSerial: first.serial,
+                    deviceTitle: first.title,
+                    startedAt: Date()
+                ),
+                ScreenRecordingDeviceSession(
+                    deviceSerial: second.serial,
+                    deviceTitle: second.title,
+                    startedAt: Date()
+                )
+            ],
+            options: ScreenRecordingOptions(),
+            audioOptions: pendingAudio
+        )
+        let saving = PhoneControlCompanionRecordingPresentation.make(
+            deviceSerial: second.serial,
+            activeSession: session,
+            isStarting: false,
+            isFinishing: true,
+            requestedDeviceSerial: nil,
+            selectedDevices: [first, second],
+            pendingAudioOptions: pendingAudio
+        )
+
+        XCTAssertEqual(saving.activity, .saving)
+        XCTAssertTrue(saving.isParticipant)
+        XCTAssertEqual(saving.statusText, "Saving · 2 screens")
+        XCTAssertEqual(saving.recordingButtonHelp, "Saving the recording")
+    }
+
     func testSeparateSessionsReceiveSeparateInitialPlacements() {
         let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
         let visible = CGRect(x: 0, y: 40, width: 1512, height: 918)

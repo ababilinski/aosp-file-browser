@@ -427,7 +427,9 @@ struct PhoneCaptureControlsView: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
-                    Text("Recording \(session.deviceTitle)")
+                    Text(session.devices.count > 1
+                        ? "Recording \(session.devices.count) screens"
+                        : "Recording \(session.deviceTitle)")
                         .font(.headline)
                     Text(elapsedText(startedAt: session.startedAt, now: now))
                         .font(.headline.monospacedDigit())

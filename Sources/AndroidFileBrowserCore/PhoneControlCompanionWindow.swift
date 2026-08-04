@@ -388,6 +388,139 @@ private final class PhoneControlCompanionWindowController: NSObject, NSWindowDel
     }
 }
 
+struct PhoneControlCompanionRecordingPresentation: Equatable {
+    enum Activity: Equatable {
+        case idle
+        case starting
+        case recording
+        case saving
+    }
+
+    let activity: Activity
+    let displayCount: Int
+    let isParticipant: Bool
+    let audioSourceLabels: [String]
+
+    static func make(
+        deviceSerial: String,
+        activeSession: ScreenRecordingSession?,
+        isStarting: Bool,
+        isFinishing: Bool,
+        requestedDeviceSerial: String?,
+        selectedDevices: [AndroidDevice],
+        pendingAudioOptions: ScreenRecordingAudioOptions
+    ) -> PhoneControlCompanionRecordingPresentation {
+        if let activeSession {
+            let participant = activeSession.deviceSerials.contains(deviceSerial)
+            return PhoneControlCompanionRecordingPresentation(
+                activity: isFinishing ? .saving : .recording,
+                displayCount: activeSession.devices.count,
+                isParticipant: participant,
+                audioSourceLabels: audioSourceLabels(
+                    devices: activeSession.devices,
+                    options: activeSession.audioOptions
+                )
+            )
+        }
+
+        guard isStarting else {
+            return PhoneControlCompanionRecordingPresentation(
+                activity: .idle,
+                displayCount: 0,
+                isParticipant: false,
+                audioSourceLabels: []
+            )
+        }
+
+        let recordingDevices: [AndroidDevice]
+        if let requestedDeviceSerial {
+            recordingDevices = selectedDevices.filter { $0.serial == requestedDeviceSerial }
+        } else {
+            recordingDevices = selectedDevices
+        }
+        let deviceSessions = recordingDevices.map {
+            ScreenRecordingDeviceSession(
+                deviceSerial: $0.serial,
+                deviceTitle: $0.title,
+                startedAt: .distantPast
+            )
+        }
+        return PhoneControlCompanionRecordingPresentation(
+            activity: .starting,
+            displayCount: recordingDevices.count,
+            isParticipant: recordingDevices.contains { $0.serial == deviceSerial },
+            audioSourceLabels: audioSourceLabels(
+                devices: deviceSessions,
+                options: pendingAudioOptions
+            )
+        )
+    }
+
+    var statusText: String? {
+        guard activity != .idle else { return nil }
+        guard isParticipant else {
+            switch activity {
+            case .starting: return "Another recording is starting"
+            case .recording: return "Not in active recording"
+            case .saving: return "Another recording is saving"
+            case .idle: return nil
+            }
+        }
+
+        let sharedSuffix = displayCount > 1 ? " · \(displayCount) screens" : ""
+        switch activity {
+        case .starting: return "Starting\(sharedSuffix)"
+        case .recording: return "Recording\(sharedSuffix)"
+        case .saving: return "Saving\(sharedSuffix)"
+        case .idle: return nil
+        }
+    }
+
+    var audioSummary: String? {
+        guard !audioSourceLabels.isEmpty else { return nil }
+        return "Audio: " + audioSourceLabels.joined(separator: ", ")
+    }
+
+    var recordingButtonHelp: String {
+        switch (activity, isParticipant) {
+        case (.recording, true):
+            return displayCount > 1
+                ? "Stop and save the combined recording"
+                : "Stop and save this recording"
+        case (.starting, true):
+            return "Starting the recording"
+        case (.saving, true):
+            return "Saving the recording"
+        case (.starting, false), (.recording, false), (.saving, false):
+            return "Another screen recording is in progress"
+        case (.idle, _):
+            return "Choose recording options"
+        }
+    }
+
+    var recordingButtonAccessibilityLabel: String {
+        if activity == .recording, isParticipant {
+            return displayCount > 1 ? "Stop combined recording" : "Stop recording"
+        }
+        return recordingButtonHelp
+    }
+
+    private static func audioSourceLabels(
+        devices: [ScreenRecordingDeviceSession],
+        options: ScreenRecordingAudioOptions
+    ) -> [String] {
+        var labels = devices.compactMap { device -> String? in
+            let source = options.phoneSource(for: device.deviceSerial)
+            guard source != .none else { return nil }
+            return "\(device.deviceTitle): \(source.title)"
+        }
+        if options.capturesMacMicrophone {
+            labels.append("Mac microphone")
+        }
+        return labels
+    }
+}
+
 private struct PhoneControlCompanionBar: View {
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @ObservedObject var model: AppModel
@@ -474,8 +607,8 @@ private struct PhoneControlCompanionBar: View {
                         }
                         .buttonStyle(.borderless)
                         .disabled(recordingButtonIsDisabled)
-                        .help(isRecording ? "Stop and save this recording" : "Choose recording options")
-                        .accessibilityLabel(isRecording ? "Stop recording" : "Record screen")
+                        .help(recordingPresentation.recordingButtonHelp)
+                        .accessibilityLabel(recordingPresentation.recordingButtonAccessibilityLabel)
                     }
 
                     if capabilities.supportsKeyEvents {
@@ -532,14 +665,16 @@ private struct PhoneControlCompanionBar: View {
             .overlay {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .stroke(
-                        isRecording
-                            ? Color.red.opacity(recordingPulse ? 0.95 : 0.38)
+                        showsRecordingActivity
+                            ? Color.red.opacity(isRecording ? (recordingPulse ? 0.95 : 0.38) : 0.55)
                             : Color.primary.opacity(0.12),
-                        lineWidth: isRecording ? 2 : 1
+                        lineWidth: showsRecordingActivity ? 2 : 1
                     )
                     .shadow(
-                        color: isRecording ? Color.red.opacity(recordingPulse ? 0.45 : 0.12) : .clear,
-                        radius: isRecording ? 5 : 0
+                        color: showsRecordingActivity
+                            ? Color.red.opacity(isRecording ? (recordingPulse ? 0.45 : 0.12) : 0.12)
+                            : .clear,
+                        radius: showsRecordingActivity ? 5 : 0
                     )
                     .allowsHitTesting(false)
             }
@@ -579,19 +714,31 @@ private struct PhoneControlCompanionBar: View {
 
     private var deviceSummary: some View {
         HStack(spacing: 8) {
-            Image(systemName: "rectangle.connected.to.line.below")
+            Image(systemName: recordingPresentation.isParticipant && recordingPresentation.displayCount > 1
+                ? "rectangle.on.rectangle.angled"
+                : "rectangle.connected.to.line.below")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.deviceTitle)
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
-                Text(isRecording ? "Recording" : (isConnected ? "Connected" : "Disconnected"))
-                    .font(.caption2)
-                    .foregroundStyle(isRecording ? Color.red : (isConnected ? Color.secondary : Color.red))
+                HStack(spacing: 4) {
+                    Text(deviceStatusText)
+                        .lineLimit(1)
+                    if recordingPresentation.isParticipant,
+                       let audioSummary = recordingPresentation.audioSummary {
+                        Image(systemName: "waveform")
+                            .help(audioSummary)
+                            .accessibilityLabel(audioSummary)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(showsRecordingActivity ? Color.red : (isConnected ? Color.secondary : Color.red))
+                .accessibilityIdentifier("phone-control-recording-status-\(session.deviceSerial)")
             }
         }
-        .frame(minWidth: 112, alignment: .leading)
+        .frame(minWidth: 132, alignment: .leading)
         .contentShape(Rectangle())
     }
 
@@ -631,21 +778,52 @@ private struct PhoneControlCompanionBar: View {
     }
 
     private var isRecording: Bool {
-        model.isScreenRecording(deviceSerial: session.deviceSerial)
+        recordingPresentation.activity == .recording && recordingPresentation.isParticipant
     }
 
     private var isStartingThisRecording: Bool {
-        model.isStartingScreenRecording
-            && model.screenRecordingRequestDeviceSerial == session.deviceSerial
+        recordingPresentation.activity == .starting && recordingPresentation.isParticipant
     }
 
     private var isSavingThisRecording: Bool {
-        isRecording && model.isFinishingScreenRecording
+        recordingPresentation.activity == .saving && recordingPresentation.isParticipant
+    }
+
+    private var showsRecordingActivity: Bool {
+        recordingPresentation.activity != .idle && recordingPresentation.isParticipant
+    }
+
+    private var deviceStatusText: String {
+        recordingPresentation.statusText ?? (isConnected ? "Connected" : "Disconnected")
+    }
+
+    private var recordingPresentation: PhoneControlCompanionRecordingPresentation {
+        let selectedSerials: Set<String>
+        if let requestedSerial = model.screenRecordingRequestDeviceSerial {
+            selectedSerials = [requestedSerial]
+        } else {
+            selectedSerials = model.selectedCaptureDeviceSerials(for: .recording)
+        }
+        let selectedDevices = model.devices.filter { selectedSerials.contains($0.serial) }
+        return PhoneControlCompanionRecordingPresentation.make(
+            deviceSerial: session.deviceSerial,
+            activeSession: model.screenRecordingSession,
+            isStarting: model.isStartingScreenRecording,
+            isFinishing: model.isFinishingScreenRecording,
+            requestedDeviceSerial: model.screenRecordingRequestDeviceSerial,
+            selectedDevices: selectedDevices,
+            pendingAudioOptions: model.screenRecordingAudioOptions
+        )
     }
 
     private var recordingButtonIsDisabled: Bool {
-        if isRecording {
-            return model.isFinishingScreenRecording
+        switch recordingPresentation.activity {
+        case .recording:
+            return !recordingPresentation.isParticipant || model.isFinishingScreenRecording
+        case .starting, .saving:
+            return true
+        case .idle:
+            break
         }
         return !isConnected
             || model.isStartingScreenRecording
