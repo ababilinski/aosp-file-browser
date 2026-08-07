@@ -3,6 +3,97 @@ import XCTest
 @testable import AndroidFileBrowserCore
 
 final class ADBWirelessConnectionTests: XCTestCase {
+    func testDeviceDiscoveryReconcilesUSBAndWiFiEndpointsByHardwareIdentity() async throws {
+        let runner = WirelessADBProcessRunner()
+        let manager = DeviceManager(adb: makeADB(runner: runner))
+
+        let devices = try await manager.devices()
+
+        XCTAssertEqual(devices.count, 1)
+        XCTAssertEqual(devices[0].physicalDeviceID, "android-hardware:HW123")
+        XCTAssertEqual(devices[0].serial, "USB123")
+        XCTAssertEqual(Set(devices[0].availableSerials), ["USB123", "192.168.1.42:5555"])
+        XCTAssertEqual(devices[0].connectionKind, .usb)
+    }
+
+    func testDeviceDiscoveryPreservesPreferredUsableWiFiEndpoint() async throws {
+        let runner = WirelessADBProcessRunner()
+        let manager = DeviceManager(adb: makeADB(runner: runner))
+
+        let devices = try await manager.devices(
+            preferredSerialsByPhysicalDeviceID: [
+                "android-hardware:HW123": "192.168.1.42:5555"
+            ]
+        )
+
+        XCTAssertEqual(devices.count, 1)
+        XCTAssertEqual(devices[0].physicalDeviceID, "android-hardware:HW123")
+        XCTAssertEqual(devices[0].serial, "192.168.1.42:5555")
+        XCTAssertEqual(devices[0].connectionKind, .wifi)
+        XCTAssertEqual(devices[0].usbSerial, "USB123")
+    }
+
+    func testDeviceDiscoveryCachesHardwareIdentityWhileEndpointTransportIsStable() async throws {
+        let runner = WirelessADBProcessRunner()
+        let manager = DeviceManager(adb: makeADB(runner: runner))
+
+        _ = try await manager.devices()
+        _ = try await manager.devices()
+
+        let commands = await runner.commands()
+        XCTAssertEqual(
+            commands.filter { $0.last == "getprop ro.serialno; getprop ro.boot.serialno" }.count,
+            2,
+            "Each of the two endpoints should resolve its identity only once."
+        )
+    }
+
+    func testDeviceDiscoveryRechecksIdentityWhenEndpointTransportChanges() async throws {
+        let runner = WirelessADBProcessRunner()
+        let manager = DeviceManager(adb: makeADB(runner: runner))
+
+        _ = try await manager.devices()
+        await runner.setTransportIDs(usb: "3", wifi: "4")
+        _ = try await manager.devices()
+
+        let commands = await runner.commands()
+        XCTAssertEqual(
+            commands.filter { $0.last == "getprop ro.serialno; getprop ro.boot.serialno" }.count,
+            4
+        )
+    }
+
+    func testSameDisplayNameDoesNotMergeDifferentPhysicalDevices() {
+        let first = AndroidDevice(
+            serial: "USB-A",
+            state: .device,
+            model: "Pixel",
+            product: "pixel",
+            transport: "1"
+        )
+        let second = AndroidDevice(
+            serial: "USB-B",
+            state: .device,
+            model: "Pixel",
+            product: "pixel",
+            transport: "2"
+        )
+
+        let devices = DeviceManager.reconcileDevices(
+            [first, second],
+            physicalDeviceIDsBySerial: [
+                "USB-A": "android-hardware:HW-A",
+                "USB-B": "android-hardware:HW-B"
+            ]
+        )
+
+        XCTAssertEqual(devices.count, 2)
+        XCTAssertEqual(Set(devices.map(\.physicalDeviceID)), [
+            "android-hardware:HW-A",
+            "android-hardware:HW-B"
+        ])
+    }
+
     func testUSBDeviceIsPreparedAndConnectedOverWiFi() async throws {
         let runner = WirelessADBProcessRunner()
         let manager = DeviceManager(adb: makeADB(runner: runner))
@@ -120,6 +211,143 @@ final class ADBWirelessConnectionTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("port 5555"))
             XCTAssertTrue(error.localizedDescription.contains("device offline"))
         }
+    }
+
+    func testWiFiEndpointCanReturnADBToUSBMode() async throws {
+        let runner = WirelessADBProcessRunner()
+        let manager = DeviceManager(adb: makeADB(runner: runner))
+        let device = AndroidDevice(
+            serial: "192.168.1.42:5555",
+            state: .device,
+            model: "Pixel",
+            product: nil,
+            transport: "2",
+            physicalDeviceID: "android-hardware:HW123"
+        )
+
+        try await manager.switchToUSB(device: device)
+
+        let commands = await runner.commands()
+        XCTAssertTrue(commands.contains(["-s", "192.168.1.42:5555", "usb"]))
+    }
+
+    func testDisconnectWiFiTargetsEveryWirelessEndpointButNotUSB() async throws {
+        let runner = WirelessADBProcessRunner()
+        let manager = DeviceManager(adb: makeADB(runner: runner))
+        let device = AndroidDevice(
+            serial: "192.168.1.42:5555",
+            state: .device,
+            model: "Pixel",
+            product: nil,
+            transport: "2",
+            physicalDeviceID: "android-hardware:HW123",
+            availableSerials: [
+                "USB123",
+                "192.168.1.42:5555",
+                "pixel._adb-tls-connect._tcp"
+            ]
+        )
+
+        try await manager.disconnectWirelessADB(device: device)
+
+        let commands = await runner.commands()
+        XCTAssertTrue(commands.contains(["disconnect", "192.168.1.42:5555"]))
+        XCTAssertTrue(commands.contains(["disconnect", "pixel._adb-tls-connect._tcp"]))
+        XCTAssertFalse(commands.contains(["disconnect", "USB123"]))
+    }
+
+    @MainActor
+    func testAppModelSwitchesLegacyWiFiDeviceBackToUSBWithStableSelection() async throws {
+        let runner = WirelessADBProcessRunner(startsInLegacyWiFiOnlyMode: true)
+        let model = makeModel(runner: runner)
+        let physicalDeviceID = "android-hardware:HW123"
+        model.devices = [
+            AndroidDevice(
+                serial: "192.168.1.42:5555",
+                state: .device,
+                model: "Pixel",
+                product: "test",
+                transport: "2",
+                physicalDeviceID: physicalDeviceID
+            )
+        ]
+        model.selectedDeviceID = physicalDeviceID
+
+        await model.switchADBConnectionToUSB(for: physicalDeviceID)
+
+        XCTAssertEqual(model.devices.count, 1)
+        XCTAssertEqual(model.selectedDeviceID, physicalDeviceID)
+        XCTAssertEqual(model.selectedDevice?.serial, "USB123")
+        XCTAssertEqual(model.selectedDevice?.connectionKind, .usb)
+        let commands = await runner.commands()
+        XCTAssertTrue(commands.contains(["-s", "192.168.1.42:5555", "usb"]))
+    }
+
+    @MainActor
+    func testAppModelDisconnectsWiFiAndKeepsAvailableUSBDeviceSelected() async throws {
+        let runner = WirelessADBProcessRunner()
+        let model = makeModel(runner: runner)
+        let physicalDeviceID = "android-hardware:HW123"
+        model.devices = [
+            AndroidDevice(
+                serial: "192.168.1.42:5555",
+                state: .device,
+                model: "Pixel",
+                product: "test",
+                transport: "2",
+                physicalDeviceID: physicalDeviceID,
+                availableSerials: ["USB123", "192.168.1.42:5555"]
+            )
+        ]
+        model.selectedDeviceID = physicalDeviceID
+
+        await model.disconnectADBWiFi(for: physicalDeviceID)
+
+        XCTAssertEqual(model.devices.count, 1)
+        XCTAssertEqual(model.selectedDeviceID, physicalDeviceID)
+        XCTAssertEqual(model.selectedDevice?.serial, "USB123")
+        XCTAssertFalse(model.selectedDevice?.hasWirelessEndpoint ?? true)
+        let commands = await runner.commands()
+        XCTAssertTrue(commands.contains(["disconnect", "192.168.1.42:5555"]))
+    }
+
+    @MainActor
+    func testFileHistorySurvivesLegacyWiFiToUSBEndpointChange() async throws {
+        let runner = WirelessADBProcessRunner(startsInLegacyWiFiOnlyMode: true)
+        let model = makeModel(runner: runner)
+        let physicalDeviceID = "android-hardware:HW123"
+        model.devices = [
+            AndroidDevice(
+                serial: "192.168.1.42:5555",
+                state: .device,
+                model: "Pixel",
+                product: "test",
+                transport: "2",
+                physicalDeviceID: physicalDeviceID
+            )
+        ]
+        model.selectedDeviceID = physicalDeviceID
+
+        await model.createFolder(named: "History Test")
+        XCTAssertTrue(model.canUndoFileOperation)
+
+        await model.switchADBConnectionToUSB(for: physicalDeviceID)
+        XCTAssertTrue(model.canUndoFileOperation)
+
+        await model.undoLastFileOperation()
+
+        XCTAssertTrue(model.canRedoFileOperation)
+        let commands = await runner.commands()
+        XCTAssertTrue(commands.contains { command in
+            command.count == 4
+                && Array(command.prefix(3)) == ["-s", "192.168.1.42:5555", "shell"]
+                && command[3].hasPrefix("mkdir ")
+        })
+        XCTAssertTrue(commands.contains { command in
+            command.count == 4
+                && Array(command.prefix(3)) == ["-s", "USB123", "shell"]
+                && command[3].hasPrefix("rm -rf ")
+        })
     }
 
     func testWirelessDebuggingPreflightReportsEnabledAndDisabled() async throws {
@@ -261,6 +489,18 @@ final class ADBWirelessConnectionTests: XCTestCase {
             runner: runner
         )
     }
+
+    @MainActor
+    private func makeModel(runner: WirelessADBProcessRunner) -> AppModel {
+        let suiteName = "AndroidFileBrowserCoreTests.ADBWirelessConnection.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return AppModel(
+            adb: makeADB(runner: runner),
+            settings: AppSettings(defaults: defaults),
+            initialTrashRecords: []
+        )
+    }
 }
 
 private actor WirelessADBProcessRunner: ProcessRunning {
@@ -277,8 +517,13 @@ private actor WirelessADBProcessRunner: ProcessRunning {
     private let tcpIPExitCode: Int32
     private let usbOutput: String
     private let usbExitCode: Int32
+    private let startsInLegacyWiFiOnlyMode: Bool
     private var pendingWirelessSettingReadSequence: [String] = []
     private var recordedCommands: [[String]] = []
+    private var usbTransportID = "1"
+    private var wifiTransportID = "2"
+    private var isUSBMode = false
+    private var disconnectedEndpoints = Set<String>()
 
     init(
         routeOutput: String = "1.1.1.1 via 192.168.1.1 dev wlan0 src 192.168.1.42 uid 2000\n",
@@ -293,7 +538,8 @@ private actor WirelessADBProcessRunner: ProcessRunning {
         tcpIPOutput: String = "restarting in TCP mode port: 5555\n",
         tcpIPExitCode: Int32 = 0,
         usbOutput: String = "restarting in USB mode\n",
-        usbExitCode: Int32 = 0
+        usbExitCode: Int32 = 0,
+        startsInLegacyWiFiOnlyMode: Bool = false
     ) {
         self.routeOutput = routeOutput
         self.wirelessCapabilityOutput = wirelessCapabilityOutput
@@ -308,10 +554,23 @@ private actor WirelessADBProcessRunner: ProcessRunning {
         self.tcpIPExitCode = tcpIPExitCode
         self.usbOutput = usbOutput
         self.usbExitCode = usbExitCode
+        self.startsInLegacyWiFiOnlyMode = startsInLegacyWiFiOnlyMode
     }
 
     func run(executable: URL, arguments: [String]) async throws -> ADBCommandResult {
         recordedCommands.append(arguments)
+        if arguments.count == 4,
+           arguments[0] == "-s",
+           arguments[2] == "shell",
+           arguments[3] == "getprop ro.serialno; getprop ro.boot.serialno" {
+            return result("HW123\nHW123\n")
+        }
+        if arguments.count == 4,
+           arguments[0] == "-s",
+           arguments[2] == "shell",
+           arguments[3].hasPrefix("test -e ") {
+            return result("1\n")
+        }
         if arguments.count == 4,
            Array(arguments.prefix(3)) == ["-s", "USB123", "shell"] {
             if arguments[3] == "cmd adb is-wifi-supported 2>/dev/null" {
@@ -333,7 +592,15 @@ private actor WirelessADBProcessRunner: ProcessRunning {
                 }
                 return result(wirelessSettingOutput)
             }
-            return result(routeOutput)
+            if arguments[3].contains("ip route get") {
+                return result(routeOutput)
+            }
+            return result("")
+        }
+        if arguments.count == 4,
+           arguments[0] == "-s",
+           arguments[2] == "shell" {
+            return result("")
         }
         switch arguments {
         case ["version"]:
@@ -344,15 +611,25 @@ private actor WirelessADBProcessRunner: ProcessRunning {
             return result(connectOutput, exitCode: connectExitCode)
         case ["-s", "USB123", "usb"]:
             return result(usbOutput, exitCode: usbExitCode)
+        case ["-s", "192.168.1.42:5555", "usb"]:
+            if usbExitCode == 0 {
+                isUSBMode = true
+            }
+            return result(usbOutput, exitCode: usbExitCode)
+        case ["disconnect", "192.168.1.42:5555"],
+             ["disconnect", "pixel._adb-tls-connect._tcp"]:
+            disconnectedEndpoints.insert(arguments[1])
+            return result("disconnected \(arguments[1])\n")
         case ["devices", "-l"]:
-            return result(
-                """
-                List of devices attached
-                USB123 device usb:1-2 product:test model:Pixel transport_id:1
-                192.168.1.42:5555 device product:test model:Pixel transport_id:2
-
-                """
-            )
+            var rows = ["List of devices attached"]
+            if !startsInLegacyWiFiOnlyMode || isUSBMode {
+                rows.append("USB123 device usb:1-2 product:test model:Pixel transport_id:\(usbTransportID)")
+            }
+            if (!startsInLegacyWiFiOnlyMode || !isUSBMode),
+               !disconnectedEndpoints.contains("192.168.1.42:5555") {
+                rows.append("192.168.1.42:5555 device product:test model:Pixel transport_id:\(wifiTransportID)")
+            }
+            return result(rows.joined(separator: "\n") + "\n")
         default:
             return result("", exitCode: 1)
         }
@@ -381,6 +658,11 @@ private actor WirelessADBProcessRunner: ProcessRunning {
 
     func commands() -> [[String]] {
         recordedCommands
+    }
+
+    func setTransportIDs(usb: String, wifi: String) {
+        usbTransportID = usb
+        wifiTransportID = wifi
     }
 
     private func result(_ output: String, exitCode: Int32 = 0) -> ADBCommandResult {

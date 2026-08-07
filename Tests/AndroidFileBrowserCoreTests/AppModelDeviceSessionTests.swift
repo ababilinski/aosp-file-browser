@@ -153,6 +153,39 @@ final class AppModelDeviceSessionTests: XCTestCase {
         XCTAssertEqual(model.batteryStatuses["second-device"]?.levelPercent, 84)
     }
 
+    func testDeveloperOptionsOnboardingValidatesADBFirst() async throws {
+        let runner = SlowAppLoadingProcessRunner()
+        let model = makeModel(runner: runner)
+
+        let canContinue = await model.prepareDeveloperOptionsOnboarding()
+
+        XCTAssertTrue(canContinue)
+        XCTAssertNil(model.toolSetupRequest)
+        let commands = await runner.commands()
+        XCTAssertTrue(commands.contains(["devices"]))
+    }
+
+    func testDeveloperOptionsOnboardingOffersADBSetupBeforeConnectionSteps() async throws {
+        let runner = SlowAppLoadingProcessRunner(adbAvailable: false)
+        let model = makeModel(runner: runner)
+
+        let canContinue = await model.prepareDeveloperOptionsOnboarding()
+
+        XCTAssertFalse(canContinue)
+        XCTAssertEqual(model.toolSetupRequest?.tool, .adb)
+        XCTAssertTrue(model.toolSetupRequest?.issue?.contains("ADB") == true)
+    }
+
+    func testScrcpySetupRequestDoesNotBecomeAnADBRequest() {
+        let runner = SlowAppLoadingProcessRunner()
+        let model = makeModel(runner: runner)
+
+        model.requestPhoneToolsSetup(for: .scrcpy)
+
+        XCTAssertEqual(model.toolSetupRequest?.tool, .scrcpy)
+        XCTAssertEqual(model.statusMessage, "Phone Control needs setup.")
+    }
+
     func testWirelessSetupRequestShowsEnablementGuidanceWhenSettingIsOff() async throws {
         let runner = SlowAppLoadingProcessRunner()
         let model = makeModel(runner: runner)
@@ -447,6 +480,7 @@ final class AppModelDeviceSessionTests: XCTestCase {
 }
 
 private actor SlowAppLoadingProcessRunner: ProcessRunning {
+    private let adbAvailable: Bool
     private let wirelessCapabilityOutput: String
     private var wirelessSettingOutput: String
     private let wirelessSettingOutputAfterEnable: String
@@ -457,10 +491,12 @@ private actor SlowAppLoadingProcessRunner: ProcessRunning {
     private var recordedCommands: [[String]] = []
 
     init(
+        adbAvailable: Bool = true,
         wirelessCapabilityOutput: String = "true\n",
         wirelessSettingOutput: String = "0\n",
         wirelessSettingOutputAfterEnable: String = "0\n"
     ) {
+        self.adbAvailable = adbAvailable
         self.wirelessCapabilityOutput = wirelessCapabilityOutput
         self.wirelessSettingOutput = wirelessSettingOutput
         self.wirelessSettingOutputAfterEnable = wirelessSettingOutputAfterEnable
@@ -469,7 +505,9 @@ private actor SlowAppLoadingProcessRunner: ProcessRunning {
     func run(executable: URL, arguments: [String]) async throws -> ADBCommandResult {
         recordedCommands.append(arguments)
         if arguments == ["version"] {
-            return result("Android Debug Bridge version 1.0.41\nVersion 37.0.0-test\n")
+            return adbAvailable
+                ? result("Android Debug Bridge version 1.0.41\nVersion 37.0.0-test\n")
+                : result("adb unavailable\n", exitCode: 1)
         }
         if arguments == ["devices", "-l"] {
             let rows = connectedDeviceSerials.map { serial in
@@ -577,7 +615,7 @@ private actor SlowAppLoadingProcessRunner: ProcessRunning {
         recordedCommands
     }
 
-    private func result(_ output: String) -> ADBCommandResult {
-        ADBCommandResult(stdoutData: Data(output.utf8), stderrData: Data(), exitCode: 0)
+    private func result(_ output: String, exitCode: Int32 = 0) -> ADBCommandResult {
+        ADBCommandResult(stdoutData: Data(output.utf8), stderrData: Data(), exitCode: exitCode)
     }
 }

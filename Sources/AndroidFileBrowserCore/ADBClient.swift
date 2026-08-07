@@ -35,6 +35,16 @@ public final class DetachedProcessHandle: @unchecked Sendable {
         process.isRunning
     }
 
+    public func interrupt() {
+        guard process.isRunning else { return }
+        Darwin.kill(pid_t(process.processIdentifier), SIGINT)
+    }
+
+    public func terminate() {
+        guard process.isRunning else { return }
+        process.terminate()
+    }
+
     public func waitUntilExit() -> Int32 {
         condition.lock()
         while cachedTerminationStatus == nil {
@@ -43,6 +53,17 @@ public final class DetachedProcessHandle: @unchecked Sendable {
         let status = cachedTerminationStatus ?? process.terminationStatus
         condition.unlock()
         return status
+    }
+
+    public func waitUntilExit(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(max(timeout, 0))
+        condition.lock()
+        while cachedTerminationStatus == nil, process.isRunning, Date() < deadline {
+            condition.wait(until: deadline)
+        }
+        let exited = cachedTerminationStatus != nil || !process.isRunning
+        condition.unlock()
+        return exited
     }
 }
 
@@ -133,6 +154,183 @@ public final class ADBScreenRecordingProcess: @unchecked Sendable {
 
         try? logHandle.synchronize()
         try? logHandle.close()
+    }
+}
+
+public final class ScrcpyScreenRecordingProcess: @unchecked Sendable {
+    public let serial: String
+    public let localURL: URL
+    public let startedAt: Date
+    public let logURL: URL
+
+    private let processHandle: DetachedProcessHandle
+
+    init(
+        serial: String,
+        localURL: URL,
+        startedAt: Date,
+        logURL: URL,
+        processHandle: DetachedProcessHandle
+    ) {
+        self.serial = serial
+        self.localURL = localURL
+        self.startedAt = startedAt
+        self.logURL = logURL
+        self.processHandle = processHandle
+    }
+
+    public var isRunning: Bool {
+        processHandle.isRunning
+    }
+
+    public func stop() {
+        processHandle.interrupt()
+    }
+
+    public func terminate() {
+        processHandle.terminate()
+    }
+
+    public func waitUntilExit(timeout: TimeInterval = 5) -> Bool {
+        if processHandle.waitUntilExit(timeout: timeout) {
+            return true
+        }
+        processHandle.terminate()
+        return processHandle.waitUntilExit(timeout: 1)
+    }
+}
+
+public enum ScreenRecordingProcess: @unchecked Sendable {
+    case adb(ADBScreenRecordingProcess)
+    case scrcpy(ScrcpyScreenRecordingProcess)
+
+    public var serial: String {
+        switch self {
+        case .adb(let handle): handle.serial
+        case .scrcpy(let handle): handle.serial
+        }
+    }
+
+    public var startedAt: Date {
+        switch self {
+        case .adb(let handle): handle.startedAt
+        case .scrcpy(let handle): handle.startedAt
+        }
+    }
+
+    public var logURL: URL {
+        switch self {
+        case .adb(let handle): handle.logURL
+        case .scrcpy(let handle): handle.logURL
+        }
+    }
+
+    public var isRunning: Bool {
+        switch self {
+        case .adb(let handle): handle.isRunning
+        case .scrcpy(let handle): handle.isRunning
+        }
+    }
+
+    public var recommendedStartupTrim: TimeInterval {
+        switch self {
+        case .adb: 0.75
+        case .scrcpy: 0
+        }
+    }
+
+    public var localArtifactURL: URL? {
+        guard case .scrcpy(let handle) = self else { return nil }
+        return handle.localURL
+    }
+
+    public func stop() {
+        switch self {
+        case .adb(let handle): handle.stop()
+        case .scrcpy(let handle): handle.stop()
+        }
+    }
+
+    public func terminate() {
+        switch self {
+        case .adb(let handle): handle.terminate()
+        case .scrcpy(let handle): handle.terminate()
+        }
+    }
+
+    public func waitUntilExit(timeout: TimeInterval = 5) -> Bool {
+        switch self {
+        case .adb(let handle): handle.waitUntilExit(timeout: timeout)
+        case .scrcpy(let handle): handle.waitUntilExit(timeout: timeout)
+        }
+    }
+}
+
+struct ScrcpyScreenRecordingAudioCapabilities: Equatable, Sendable {
+    private static let requiredRecordingOptions: Set<String> = [
+        "--serial",
+        "--record",
+        "--record-format",
+        "--no-playback",
+        "--no-window",
+        "--no-control",
+        "--no-clipboard-autosync",
+        "--video-codec",
+        "--audio-codec",
+        "--audio-bit-rate",
+        "--audio-source",
+        "--require-audio",
+        "--video-bit-rate",
+        "--max-size",
+        "--time-limit"
+    ]
+    private static let knownAudioSources = ["output", "mic", "voice-performance"]
+
+    let options: Set<String>
+    let audioSources: Set<String>
+
+    static func supportsRequiredVersion(_ output: String) -> Bool {
+        guard let versionLine = output
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .first(where: { $0.lowercased().hasPrefix("scrcpy ") }) else {
+            return false
+        }
+        let fields = versionLine.split(whereSeparator: \.isWhitespace)
+        guard fields.count > 1 else { return false }
+        let components = fields[1].split(separator: ".", omittingEmptySubsequences: false)
+        guard components.count >= 2,
+              let major = Int(components[0].prefix(while: \.isNumber)),
+              let minor = Int(components[1].prefix(while: \.isNumber)) else {
+            return false
+        }
+        return major > 4 || (major == 4 && minor >= 1)
+    }
+
+    static func parse(helpOutput: String) -> ScrcpyScreenRecordingAudioCapabilities {
+        let lowercased = helpOutput.lowercased()
+        let options = Set(lowercased.components(separatedBy: .whitespacesAndNewlines).compactMap {
+            component -> String? in
+            guard let optionStart = component.range(of: "--")?.lowerBound else { return nil }
+            let suffix = component[optionStart...]
+            let option = suffix.prefix { character in
+                character == "-" || character.isLetter || character.isNumber
+            }
+            return option.count > 2 ? String(option) : nil
+        })
+        let audioSources = Set(knownAudioSources.filter { source in
+            lowercased.contains("\"\(source)\"") || lowercased.contains("'\(source)'")
+        })
+        return ScrcpyScreenRecordingAudioCapabilities(
+            options: options,
+            audioSources: audioSources
+        )
+    }
+
+    func supports(audioSources requestedSources: [PhoneRecordingAudioSource]) -> Bool {
+        guard Self.requiredRecordingOptions.isSubset(of: options) else { return false }
+        let requestedAudioSources = Set(requestedSources.compactMap(\.scrcpyAudioSource))
+        return requestedAudioSources.isSubset(of: audioSources)
     }
 }
 
@@ -952,6 +1150,34 @@ public actor ADBClient {
         throw FileOperationError.toolUnavailable(.scrcpy, "macOS could not open any compatible Phone Control copy.")
     }
 
+    public func validateScreenRecordingAudioTools(
+        audioSources: [PhoneRecordingAudioSource]
+    ) async throws {
+        try await validateADB()
+        guard audioSources.contains(where: { $0 != .none }) else { return }
+
+        let candidates = (try? locator.resolutionCandidates(for: .scrcpy)) ?? []
+        for candidate in candidates {
+            guard locator.scrcpyServerURL(for: candidate) != nil else { continue }
+            do {
+                guard let capabilities = try await scrcpyScreenRecordingAudioCapabilities(
+                    for: candidate
+                ), capabilities.supports(audioSources: audioSources) else {
+                    continue
+                }
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                continue
+            }
+        }
+        throw FileOperationError.toolUnavailable(
+            .scrcpy,
+            "Screen recording audio needs a compatible Phone Tools installation."
+        )
+    }
+
     public func launchScrcpy(
         serial: String,
         windowTitle: String = "ASOP File Browser Phone Control",
@@ -1057,6 +1283,146 @@ public actor ADBClient {
         return arguments
     }
 
+    nonisolated static func scrcpyScreenRecordingArguments(
+        serial: String,
+        localURL: URL,
+        options: ScreenRecordingOptions,
+        audioSource: PhoneRecordingAudioSource
+    ) -> [String] {
+        guard let scrcpyAudioSource = audioSource.scrcpyAudioSource else { return [] }
+
+        var arguments = [
+            "--serial", serial,
+            "--record=\(localURL.path)",
+            "--record-format=mp4",
+            "--no-playback",
+            "--no-window",
+            "--no-control",
+            "--no-clipboard-autosync",
+            "--video-codec=h264",
+            "--audio-codec=aac",
+            "--audio-bit-rate=128K",
+            "--audio-source=\(scrcpyAudioSource)",
+            "--require-audio",
+            "--video-bit-rate=\(options.effectiveVideoBitRateMbps)M"
+        ]
+        if let maxSize = options.scrcpyMaxSize {
+            arguments.append("--max-size=\(maxSize)")
+        }
+        if options.durationMode == .fixed {
+            arguments.append("--time-limit=\(options.effectiveFixedDurationSeconds)")
+        }
+        return arguments
+    }
+
+    public func startScrcpyScreenRecording(
+        serial: String,
+        localURL: URL,
+        options: ScreenRecordingOptions,
+        audioSource: PhoneRecordingAudioSource
+    ) async throws -> ScrcpyScreenRecordingProcess {
+        guard audioSource != .none else {
+            throw FileOperationError.commandFailed("Choose a phone audio source before starting an audio recording.")
+        }
+
+        let adbURL = try await workingADBURL()
+        let scrcpyCandidates = try locator.resolutionCandidates(for: .scrcpy)
+        let arguments = Self.scrcpyScreenRecordingArguments(
+            serial: serial,
+            localURL: localURL,
+            options: options,
+            audioSource: audioSource
+        )
+
+        for candidate in scrcpyCandidates {
+            guard let serverURL = locator.scrcpyServerURL(for: candidate) else { continue }
+            do {
+                guard let capabilities = try await scrcpyScreenRecordingAudioCapabilities(
+                    for: candidate
+                ), capabilities.supports(audioSources: [audioSource]) else {
+                    continue
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                continue
+            }
+            try? FileManager.default.removeItem(at: localURL)
+            let environment = [
+                "ADB": adbURL.path,
+                "SCRCPY_SERVER_PATH": serverURL.path
+            ]
+            let startedAt = Date()
+            let observation: DetachedLaunchObservation
+            do {
+                observation = try await runner.launchObserved(
+                    executable: candidate.url,
+                    arguments: arguments,
+                    environment: environment,
+                    observationDuration: 1.75
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                continue
+            }
+
+            if let exitCode = observation.exitCode {
+                let output = observation.output.isEmpty
+                    ? "scrcpy exited without an error message."
+                    : observation.output
+                if Self.isScrcpyInstallationFailure(output) {
+                    continue
+                }
+                throw FileOperationError.commandFailed(
+                    Self.scrcpyScreenRecordingFailureMessage(
+                        output: output,
+                        exitCode: exitCode,
+                        audioSource: audioSource,
+                        logURL: observation.logURL
+                    )
+                )
+            }
+
+            return ScrcpyScreenRecordingProcess(
+                serial: serial,
+                localURL: localURL,
+                startedAt: startedAt,
+                logURL: observation.logURL,
+                processHandle: observation.processHandle
+            )
+        }
+        throw FileOperationError.toolUnavailable(
+            .scrcpy,
+            "Screen recording audio needs a compatible Phone Tools installation."
+        )
+    }
+
+    private func scrcpyScreenRecordingAudioCapabilities(
+        for candidate: ToolchainCandidate
+    ) async throws -> ScrcpyScreenRecordingAudioCapabilities? {
+        let versionResult = try await runWithTimeout(
+            executable: candidate.url,
+            arguments: ["--version"],
+            timeout: 5
+        )
+        guard versionResult.exitCode == 0,
+              ScrcpyScreenRecordingAudioCapabilities.supportsRequiredVersion(
+                versionResult.stdout + versionResult.stderr
+              ) else {
+            return nil
+        }
+        let result = try await runWithTimeout(
+            executable: candidate.url,
+            arguments: ["--help"],
+            timeout: 5
+        )
+        guard result.exitCode == 0 else { return nil }
+        return ScrcpyScreenRecordingAudioCapabilities.parse(
+            helpOutput: result.stdout + result.stderr
+        )
+    }
+
     public func startScreenRecording(
         serial: String,
         remotePath: String,
@@ -1146,6 +1512,26 @@ public actor ADBClient {
             || lowercased.contains("scrcpy-server") && lowercased.contains("not found")
             || lowercased.contains("bad cpu type")
             || lowercased.contains("exec format")
+    }
+
+    private static func scrcpyScreenRecordingFailureMessage(
+        output: String,
+        exitCode: Int32,
+        audioSource: PhoneRecordingAudioSource,
+        logURL: URL
+    ) -> String {
+        let lowercased = output.lowercased()
+        if lowercased.contains("android 11")
+            || lowercased.contains("api 30")
+            || lowercased.contains("audio capture is not supported") {
+            return "Phone audio recording requires Android 11 or later. Android 11 phones must also be unlocked when recording starts."
+        }
+        if lowercased.contains("audio")
+            && (lowercased.contains("failed") || lowercased.contains("error") || lowercased.contains("disabled")) {
+            let sourceName = audioSource == .phoneMicrophone ? "phone microphone" : "selected phone audio"
+            return "The \(sourceName) could not start. Unlock the phone, make sure another app is not using that audio source, and try again.\n\nDetails: \(logURL.path)"
+        }
+        return "Phone audio recording exited with code \(exitCode).\n\n\(output)\n\nLog: \(logURL.path)"
     }
 
     private func runWithTimeout(

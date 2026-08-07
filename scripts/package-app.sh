@@ -219,6 +219,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <true/>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © 2026 Adrian Babilinski</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>ASOP File Browser records audio from your Mac's microphone when you include it in a screen recording.</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key>

@@ -290,13 +290,15 @@ private struct ToolSetupSheet: View {
 
     private var installButtonTitle: String {
         if shouldUseManagedCopy {
-            return "Use Managed Copy"
+            return "Use Managed \(currentRequest.tool.title)"
         }
-        return toolchainManager.hasManagedTools ? "Repair Phone Tools" : "Install Phone Tools"
+        return toolchainManager.hasManagedTool(currentRequest.tool)
+            ? "Repair \(currentRequest.tool.title)"
+            : "Install \(currentRequest.tool.title)"
     }
 
     private var shouldUseManagedCopy: Bool {
-        guard toolchainManager.hasManagedTools else { return false }
+        guard toolchainManager.hasManagedTool(currentRequest.tool) else { return false }
         switch currentRequest.tool {
         case .adb:
             return model.settings.adbToolMode != .automatic
@@ -308,7 +310,7 @@ private struct ToolSetupSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .top, spacing: 16) {
-                Image(systemName: "wrench.and.screwdriver.fill")
+                Image(systemName: currentRequest.tool.symbol)
                     .font(.system(size: 30, weight: .semibold))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.tint)
@@ -316,8 +318,12 @@ private struct ToolSetupSheet: View {
                     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(issueMessage == nil ? "Set Up Phone Tools" : "Phone Tools Need Attention")
-                        .font(.title2.weight(.semibold))
+                    Text(
+                        issueMessage == nil
+                            ? "Set Up \(currentRequest.tool.title)"
+                            : "\(currentRequest.tool.title) Needs Attention"
+                    )
+                    .font(.title2.weight(.semibold))
                     Text(summary)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -335,14 +341,13 @@ private struct ToolSetupSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                Label("Downloads from the official scrcpy release", systemImage: "checkmark.shield")
-                Label("Verified before anything is installed", systemImage: "checkmark.shield")
-                Label("Kept in Application Support", systemImage: "folder")
-                Label("No administrator password or phone app needed", systemImage: "person.crop.circle.badge.checkmark")
+                ForEach(managedSetupDetails, id: \.title) { detail in
+                    Label(detail.title, systemImage: detail.symbol)
+                }
             }
             .font(.callout)
 
-            Text("The download is about 13 MB and includes ADB, scrcpy, and the matching Phone Control files.")
+            Text(managedSetupCaption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -385,12 +390,7 @@ private struct ToolSetupSheet: View {
                 .disabled(isInstalling)
             }
 
-            HStack(spacing: 16) {
-                Link("Official release", destination: URL(string: "https://github.com/Genymobile/scrcpy/releases/tag/v4.1")!)
-                Link("Licenses", destination: URL(string: "https://github.com/Genymobile/scrcpy/blob/v4.1/LICENSE")!)
-                Link("ADB terms", destination: URL(string: "https://developer.android.com/studio/terms")!)
-            }
-            .font(.caption)
+            setupLinks
         }
         .padding(28)
         .frame(width: 520)
@@ -404,6 +404,50 @@ private struct ToolSetupSheet: View {
         case .scrcpy:
             "Phone Control needs scrcpy and its matching support files. The app can set them up, or you can choose an existing copy."
         }
+    }
+
+    private var managedSetupDetails: [(title: String, symbol: String)] {
+        switch currentRequest.tool {
+        case .adb:
+            [
+                ("Downloads a verified ADB copy", "checkmark.shield"),
+                ("Keeps it in Application Support", "folder"),
+                ("No administrator password needed", "person.crop.circle.badge.checkmark")
+            ]
+        case .scrcpy:
+            [
+                ("Downloads verified scrcpy files", "checkmark.shield"),
+                ("Keeps them in Application Support", "folder"),
+                ("No administrator password or phone app needed", "person.crop.circle.badge.checkmark")
+            ]
+        }
+    }
+
+    private var managedSetupCaption: String {
+        switch currentRequest.tool {
+        case .adb:
+            "The managed download is about 13 MB. You can also choose an ADB executable already on this Mac or follow the manual installation guide."
+        case .scrcpy:
+            "Installs scrcpy and its matching server file. Your working ADB selection is left unchanged."
+        }
+    }
+
+    @ViewBuilder
+    private var setupLinks: some View {
+        HStack(spacing: 16) {
+            switch currentRequest.tool {
+            case .adb:
+                Link(
+                    "Install ADB Yourself",
+                    destination: URL(string: "https://developer.android.com/tools/releases/platform-tools")!
+                )
+                Link("ADB terms", destination: URL(string: "https://developer.android.com/studio/terms")!)
+            case .scrcpy:
+                Link("Official scrcpy release", destination: URL(string: "https://github.com/Genymobile/scrcpy/releases/tag/v4.1")!)
+                Link("scrcpy license", destination: URL(string: "https://github.com/Genymobile/scrcpy/blob/v4.1/LICENSE")!)
+            }
+        }
+        .font(.caption)
     }
 
     private func chooseExistingCopy() {
@@ -959,7 +1003,9 @@ private struct DeviceRow: View {
         }
         .help(device.subtitle)
         .contextMenu {
-            if device.connectionKind == .usb, device.state == .device {
+            if model.updatingWirelessADBDeviceIDs.contains(device.id) {
+                Label("Updating connection…", systemImage: "progress.indicator")
+            } else if device.connectionKind == .usb, device.state == .device, !device.hasWirelessEndpoint {
                 Button {
                     model.requestWirelessADBSetup(for: device.id)
                 } label: {
@@ -967,6 +1013,20 @@ private struct DeviceRow: View {
                 }
             } else if device.connectionKind == .wifi {
                 Label("Connected via Wi-Fi", systemImage: "wifi")
+                Button {
+                    Task { await model.switchADBConnectionToUSB(for: device.id) }
+                } label: {
+                    Label("Use USB Connection", systemImage: "cable.connector")
+                }
+            }
+
+            if device.hasWirelessEndpoint,
+               !model.updatingWirelessADBDeviceIDs.contains(device.id) {
+                Button(role: .destructive) {
+                    Task { await model.disconnectADBWiFi(for: device.id) }
+                } label: {
+                    Label("Disconnect Wi-Fi", systemImage: "wifi.slash")
+                }
             }
         }
         .accessibilityElement(children: .contain)
@@ -982,42 +1042,49 @@ private struct DeviceRow: View {
 
     @ViewBuilder
     private var connectionAccessory: some View {
-        switch wirelessSetupState {
-        case .preparing:
+        if model.updatingWirelessADBDeviceIDs.contains(device.id) {
             ProgressView()
                 .controlSize(.small)
                 .frame(width: 24, height: 24)
-                .help("Preparing ADB over Wi-Fi")
-        case .ready:
-            Image(systemName: "wifi")
-                .foregroundStyle(adaptiveSuccessColor)
+                .help("Updating the ADB connection")
+        } else {
+            switch wirelessSetupState {
+            case .preparing:
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 24, height: 24)
+                    .help("Preparing ADB over Wi-Fi")
+            case .ready:
+                Image(systemName: "wifi")
+                    .foregroundStyle(adaptiveSuccessColor)
+                    .frame(width: 24, height: 24)
+                    .help("Connected over Wi-Fi. You can unplug the cable.")
+            case .failed(let message):
+                Button {
+                    model.requestWirelessADBSetup(for: device.id)
+                } label: {
+                    Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(adaptiveWarningColor)
+                .help("Wi-Fi setup failed: \(message) Select to try again.")
+                .accessibilityLabel("Retry Wi-Fi setup")
+            case nil where device.connectionKind == .usb && device.state == .device:
+                Button {
+                    model.requestWirelessADBSetup(for: device.id)
+                } label: {
+                    Image(systemName: device.connectionKind.symbol)
+                }
+                .buttonStyle(.borderless)
                 .frame(width: 24, height: 24)
-                .help("Connected over Wi-Fi. You can unplug the cable.")
-        case .failed(let message):
-            Button {
-                model.requestWirelessADBSetup(for: device.id)
-            } label: {
-                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(adaptiveWarningColor)
-            .help("Wi-Fi setup failed: \(message) Select to try again.")
-            .accessibilityLabel("Retry Wi-Fi setup")
-        case nil where device.connectionKind == .usb && device.state == .device:
-            Button {
-                model.requestWirelessADBSetup(for: device.id)
-            } label: {
+                .help("Switch this USB debugging connection to Wi-Fi")
+                .accessibilityLabel("Switch \(device.title) to ADB over Wi-Fi")
+            case nil:
                 Image(systemName: device.connectionKind.symbol)
+                    .foregroundStyle(device.state == .device ? Color.secondary : adaptiveWarningColor)
+                    .frame(width: 24, height: 24)
+                    .help("\(device.connectionKind.label) connection")
             }
-            .buttonStyle(.borderless)
-            .frame(width: 24, height: 24)
-            .help("Switch this USB debugging connection to Wi-Fi")
-            .accessibilityLabel("Switch \(device.title) to ADB over Wi-Fi")
-        case nil:
-            Image(systemName: device.connectionKind.symbol)
-                .foregroundStyle(device.state == .device ? Color.secondary : adaptiveWarningColor)
-                .frame(width: 24, height: 24)
-                .help("\(device.connectionKind.label) connection")
         }
     }
 
@@ -2151,7 +2218,7 @@ private struct ConnectionHomeView: View {
 
                 if let activeSetupMode {
                     setupTutorial(for: activeSetupMode, isModeSwitchPrompt: false)
-                } else if shouldShowADBSetupAfterModeSwitch && !showsConnectionChoices {
+                } else if shouldShowADBSetupAfterModeSwitch && !showsConnectionChoices && !needsPhoneTools {
                     setupTutorial(for: .adb, isModeSwitchPrompt: true)
                 } else {
                     connectionMethodChooser
@@ -2512,6 +2579,17 @@ private struct ConnectionHomeView: View {
     }
 
     private func beginSetup(_ mode: ConnectionSetupMode) {
+        if mode == .adb {
+            Task {
+                guard await model.prepareDeveloperOptionsOnboarding() else { return }
+                activateSetup(mode)
+            }
+            return
+        }
+        activateSetup(mode)
+    }
+
+    private func activateSetup(_ mode: ConnectionSetupMode) {
         activeSetupMode = mode
         setupStepIndex = 0
         showsConnectionChoices = false

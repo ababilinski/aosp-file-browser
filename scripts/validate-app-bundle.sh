@@ -130,6 +130,8 @@ plist_value() {
   || fail "The app must keep macOS 13.0 as its minimum system version."
 [[ "$(plist_value LSMultipleInstancesProhibited)" == "true" ]] \
   || fail "The app must prohibit multiple running instances."
+[[ "$(plist_value NSMicrophoneUsageDescription)" == "ASOP File Browser records audio from your Mac's microphone when you include it in a screen recording." ]] \
+  || fail "The app must include its approved microphone usage description."
 
 if [[ -n "$EXPECTED_VERSION" ]]; then
   [[ "$(plist_value CFBundleShortVersionString)" == "$EXPECTED_VERSION" ]] \
@@ -202,6 +204,10 @@ trap '/bin/rm -f "$ENTITLEMENTS_FILE"' EXIT
 USB_ENTITLEMENT="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.usb' "$ENTITLEMENTS_FILE" 2>/dev/null || true)"
 [[ "$USB_ENTITLEMENT" == "true" || "$USB_ENTITLEMENT" == "1" ]] \
   || fail "The USB entitlement is missing."
+
+AUDIO_INPUT_ENTITLEMENT="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$ENTITLEMENTS_FILE" 2>/dev/null || true)"
+[[ "$AUDIO_INPUT_ENTITLEMENT" == "true" || "$AUDIO_INPUT_ENTITLEMENT" == "1" ]] \
+  || fail "The audio input entitlement is missing."
 
 GET_TASK_ALLOW="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.get-task-allow' "$ENTITLEMENTS_FILE" 2>/dev/null || true)"
 [[ "$GET_TASK_ALLOW" != "true" && "$GET_TASK_ALLOW" != "1" ]] \

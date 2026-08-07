@@ -36,8 +36,14 @@ private struct PreparedCaptureDevice {
 
 private struct ScreenRecordingLaunchOutcome: @unchecked Sendable {
     let device: AndroidDevice
-    let handle: ADBScreenRecordingProcess?
+    let handle: ScreenRecordingProcess?
     let errorMessage: String?
+}
+
+private struct ScreenRecordingFinishOutcome: @unchecked Sendable {
+    let serial: String
+    let source: CapturedVideoSource?
+    let error: Error?
 }
 
 private struct FileHistoryFolder {
@@ -72,18 +78,12 @@ private struct OptimisticRemoteMovePlan {
     let replacedDestinationSearchResults: [AndroidFile]
 }
 
-private enum TrashRecordsStorage {
-    case applicationSupport
-    case file(URL)
-    case memoryOnly
-}
-
 private indirect enum FileHistoryOperation {
     case createFolders(deviceSerial: String, folders: [FileHistoryFolder], actionName: String)
     case deletePaths(deviceSerial: String, paths: [String], redo: FileHistoryOperation, actionName: String)
     case rename(deviceSerial: String, steps: [FileHistoryRenameStep], actionName: String)
-    case trashItems(deviceSerial: String, items: [RemoteClipboardItem], actionName: String)
-    case restoreTrash(deviceSerial: String, records: [TrashRecord], actionName: String)
+    case trashItems(deviceIdentity: String, items: [RemoteClipboardItem], actionName: String)
+    case restoreTrash(deviceIdentity: String, records: [TrashRecord], actionName: String)
     case copyItems(deviceSerial: String, items: [RemoteClipboardItem], destination: String, destinationNames: [String], actionName: String)
     case moveItems(deviceSerial: String, steps: [FileHistoryMoveStep], actionName: String)
     case queuedTransfer(jobID: UUID, completedUndo: FileHistoryOperation, redo: FileHistoryOperation, actionName: String)
@@ -139,11 +139,17 @@ struct UploadFilePresentation: Hashable {
 
 @MainActor
 public final class AppModel: ObservableObject {
-    @Published public var devices: [AndroidDevice] = []
+    @Published public var devices: [AndroidDevice] = [] {
+        didSet {
+            guard oldValue != devices else { return }
+            refreshVisibleTrashRecords()
+        }
+    }
     @Published public var selectedDeviceID: AndroidDevice.ID? {
         didSet {
             guard oldValue != selectedDeviceID else { return }
             invalidateADBDeviceSession()
+            refreshVisibleTrashRecords()
         }
     }
     @Published public var sidebarSelection: SidebarDestination? {
@@ -186,11 +192,14 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var isApplyingCapturePresentation = false
     @Published public var screenshotOptions = ScreenRecordingOptions()
     @Published public var screenRecordingOptions = ScreenRecordingOptions()
+    @Published public var screenRecordingAudioOptions = ScreenRecordingAudioOptions()
     @Published public var phoneControlOptions = ScreenRecordingOptions()
     @Published public var screenshotCaptureDeviceSerials: Set<String> = []
     @Published public var recordingCaptureDeviceSerials: Set<String> = []
     @Published public private(set) var screenRecordingSession: ScreenRecordingSession?
     @Published public private(set) var phoneControlSessions: [PhoneControlSession] = []
+    @Published public private(set) var phoneControlsRestartingWithoutAudio = Set<String>()
+    @Published public private(set) var phoneControlShutdownsInProgress = Set<String>()
     @Published public private(set) var phoneControlCapabilityStates: [String: PhoneControlCapabilityState] = [:]
     @Published public private(set) var captureAppChoices: [AndroidPackage] = []
     @Published public private(set) var isLoadingCaptureApps = false
@@ -214,7 +223,8 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var failedFolderSizePaths = Set<AndroidFile.ID>()
     @Published public private(set) var isLoadingCurrentFolder = false
     @Published public private(set) var isSwitchingADBDevice = false
-    @Published public var trashRecords: [TrashRecord] = []
+    @Published public private(set) var trashRecords: [TrashRecord] = []
+    @Published public private(set) var trashPersistenceIssue: String?
     @Published public private(set) var fileHistoryRevision = 0
     @Published public private(set) var isRunningFileHistoryOperation = false
     @Published public var packages: [AndroidPackage] = []
@@ -246,6 +256,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var isPrefetchingStorageCategories = false
     @Published public private(set) var batteryStatuses: [AndroidDevice.ID: BatteryStatus] = [:]
     @Published public private(set) var wirelessADBSetupStates: [AndroidDevice.ID: ADBWirelessSetupState] = [:]
+    @Published public private(set) var updatingWirelessADBDeviceIDs = Set<AndroidDevice.ID>()
     @Published public var wirelessADBSetupPresentation: ADBWirelessSetupPresentation?
     @Published public var pendingRename: AndroidFile?
     @Published public var inlineRenameFileID: AndroidFile.ID?
@@ -278,6 +289,7 @@ public final class AppModel: ObservableObject {
     private let appManager: AppManagerService
     private let captureService: DeviceCaptureService
     private let captureCompositionService: CaptureCompositionService
+    private let macMicrophoneCaptureService: MacMicrophoneCaptureService
     private let thumbnailService: ThumbnailService
     private let thumbnailRequestScheduler = ADBThumbnailRequestScheduler(maximumConcurrentRequests: 1)
     private let cacheStore: AppCacheStore
@@ -303,7 +315,8 @@ public final class AppModel: ObservableObject {
     private var usbTransferManagerCancellable: AnyCancellable?
     private var delayedTransferPresentationTasks: [UUID: Task<Void, Never>] = [:]
     private var presentedDelayedTransferJobIDs = Set<UUID>()
-    private var screenRecordingHandles: [String: ADBScreenRecordingProcess] = [:]
+    private var screenRecordingHandles: [String: ScreenRecordingProcess] = [:]
+    private var macMicrophoneCaptureHandle: MacMicrophoneCaptureHandle?
     private var screenRecordingRestorePlans: [String: ScreenRecordingRestorePlan] = [:]
     private var screenRecordingMonitorTask: Task<Void, Never>?
     private var phoneControlRestorePlans: [String: ScreenRecordingRestorePlan] = [:]
@@ -337,6 +350,12 @@ public final class AppModel: ObservableObject {
     private var folderSizeWorkerTask: Task<Void, Never>?
     private var folderSizeWorkerGeneration = 0
     private let trashSessionSnapshot: TrashSessionSnapshot
+    private var trashRecordsByDeviceIdentity: [String: [TrashRecord]]
+    private let trashRecordStore: TrashRecordStore?
+    private let trashRecordsAreMemoryOnly: Bool
+    private let trashDeviceScopeProvider: @Sendable (AndroidDevice) -> TrashDeviceScope
+    private var visibleTrashDeviceScope: TrashDeviceScope?
+    private var activeTrashPreviewDeviceIdentity: String?
     @Published public var expandedTreePaths = Set<String>()
     @Published public private(set) var treeChildrenByPath: [String: [AndroidFile]] = [:]
     @Published public private(set) var loadingTreePaths = Set<String>()
@@ -355,8 +374,6 @@ public final class AppModel: ObservableObject {
     public let toolchainManager: ToolchainManager
     public let usbTransferManager: USBTransferManager
     public let transferQueue: TransferQueue
-    private let trashRecordsStorage: TrashRecordsStorage
-
     public init(
         adb: ADBClient = ADBClient(),
         settings: AppSettings = AppSettings(),
@@ -365,26 +382,62 @@ public final class AppModel: ObservableObject {
         transferQueue: TransferQueue = TransferQueue(),
         cacheStore: AppCacheStore = AppCacheStore(),
         initialTrashRecords: [TrashRecord]? = nil,
-        trashRecordsFileURL: URL? = nil
+        trashRecordsFileURL: URL? = nil,
+        trashRecordsEncryptionKeyData: Data? = nil,
+        trashDeviceScopeProvider: @escaping @Sendable (AndroidDevice) -> TrashDeviceScope = {
+            TrashDeviceScope(
+                identity: $0.physicalDeviceID,
+                legacyIdentifiers: Set($0.availableSerials)
+            )
+        }
     ) {
-        let trashRecordsStorage: TrashRecordsStorage
-        if let trashRecordsFileURL {
-            trashRecordsStorage = .file(trashRecordsFileURL)
-        } else if initialTrashRecords != nil {
+        let trashRecordStore: TrashRecordStore?
+        let trashRecordsAreMemoryOnly: Bool
+        let loadedTrashResult: TrashRecordStoreLoadResult
+        if let initialTrashRecords {
             // Injected records are used by previews and tests. Keep them isolated
             // unless the caller explicitly supplies a file URL.
-            trashRecordsStorage = .memoryOnly
+            if let trashRecordsFileURL {
+                trashRecordStore = TrashRecordStore(
+                    fileURL: trashRecordsFileURL,
+                    encryptionKeyData: trashRecordsEncryptionKeyData
+                )
+                trashRecordsAreMemoryOnly = false
+            } else {
+                trashRecordStore = nil
+                trashRecordsAreMemoryOnly = true
+            }
+            loadedTrashResult = TrashRecordStoreLoadResult(
+                archive: TrashRecordsArchive(records: initialTrashRecords),
+                recoveryNotice: nil,
+                migratedLegacyFile: false,
+                recoveredFromBackup: false
+            )
         } else {
-            trashRecordsStorage = .applicationSupport
+            trashRecordsAreMemoryOnly = false
+            let fileURL = trashRecordsFileURL ?? (try? Self.trashRecordsURL())
+            trashRecordStore = fileURL.map {
+                TrashRecordStore(fileURL: $0, encryptionKeyData: trashRecordsEncryptionKeyData)
+            }
+            loadedTrashResult = trashRecordStore?.load() ?? TrashRecordStoreLoadResult(
+                archive: TrashRecordsArchive(),
+                recoveryNotice: "Trash history storage is unavailable. No Trash metadata was exposed.",
+                migratedLegacyFile: false,
+                recoveredFromBackup: false
+            )
         }
-        let existingTrashRecords = initialTrashRecords ?? Self.loadTrashRecords(from: trashRecordsStorage)
+        let existingTrashRecords = loadedTrashResult.archive.allRecords
         self.adb = adb
         self.settings = settings
         self.toolchainManager = toolchainManager
         self.usbTransferManager = usbTransferManager
         self.transferQueue = transferQueue
         self.cacheStore = cacheStore
-        self.trashRecordsStorage = trashRecordsStorage
+        self.trashRecordStore = trashRecordStore
+        self.trashRecordsAreMemoryOnly = trashRecordsAreMemoryOnly
+        self.trashDeviceScopeProvider = trashDeviceScopeProvider
+        self.trashRecordsByDeviceIdentity = loadedTrashResult.archive.recordsByDeviceIdentity
+        self.trashPersistenceIssue = loadedTrashResult.recoveryNotice
         self.trashSessionSnapshot = TrashSessionSnapshot(recordsAtStart: existingTrashRecords)
         let scanner = MediaStoreScanner(adb: adb)
         self.deviceManager = DeviceManager(adb: adb)
@@ -392,9 +445,10 @@ public final class AppModel: ObservableObject {
         self.appManager = AppManagerService(adb: adb)
         self.captureService = DeviceCaptureService(adb: adb)
         self.captureCompositionService = CaptureCompositionService()
+        self.macMicrophoneCaptureService = MacMicrophoneCaptureService()
         self.thumbnailService = ThumbnailService()
         self.sidebarSelection = .location(Self.defaultQuickLocations[0])
-        self.trashRecords = existingTrashRecords
+        self.trashRecords = []
         self.usbTransferManager.configureADBReleaseHandler { [adb] in
             do {
                 try await adb.killServer()
@@ -436,6 +490,19 @@ public final class AppModel: ObservableObject {
                 self?.storagePrefetchActivityDidChange()
             }
         }
+
+        let legacyTrashRecords = existingTrashRecords
+        let thumbnailService = self.thumbnailService
+        let cacheStore = self.cacheStore
+        Task {
+            let thumbnailKeys = Set(legacyTrashRecords.map(Self.legacyTrashThumbnailCacheKey))
+            await thumbnailService.removeCachedThumbnails(cacheKeys: thumbnailKeys)
+            let previewNames = await Self.legacyTrashPreviewCacheNames(
+                records: legacyTrashRecords,
+                thumbnailService: thumbnailService
+            )
+            await cacheStore.removeLegacyTrashPreviewFiles(cacheNames: previewNames)
+        }
     }
 
     public var selectedDevice: AndroidDevice? {
@@ -450,6 +517,10 @@ public final class AppModel: ObservableObject {
 
     public func phoneControlSession(for deviceSerial: String) -> PhoneControlSession? {
         phoneControlSessions.first { $0.deviceSerial == deviceSerial }
+    }
+
+    public var hasPhoneControlTransitionInProgress: Bool {
+        !phoneControlsRestartingWithoutAudio.isEmpty || !phoneControlShutdownsInProgress.isEmpty
     }
 
     public func phoneControlCapabilityState(for deviceSerial: String) -> PhoneControlCapabilityState? {
@@ -480,9 +551,16 @@ public final class AppModel: ObservableObject {
         settings.trashQuitBehavior == .emptyAutomatically && !trashRecords.isEmpty
     }
 
+    public var hasActiveScreenRecordingActivity: Bool {
+        screenRecordingSession != nil || isStartingScreenRecording || isFinishingScreenRecording
+    }
+
     public func beginTerminationRequest() -> Bool {
         let hasActiveTransfer = transferQueue.unfinishedJobs.contains { $0.kind != .preview }
         guard !isPreparingForTermination,
+              screenRecordingSession == nil,
+              !isStartingScreenRecording,
+              !isFinishingScreenRecording,
               !operationActivity.hasTerminationBlockingActivity,
               !isRunningFileHistoryOperation,
               !usbTransferManager.hasTerminationBlockingActivity,
@@ -775,8 +853,8 @@ public final class AppModel: ObservableObject {
             try? await refreshFilesThrowing()
             return .rename(deviceSerial: deviceSerial, steps: inverseSteps.reversed(), actionName: actionName)
 
-        case .trashItems(let deviceSerial, let items, let actionName):
-            let device = try deviceForFileHistory(serial: deviceSerial)
+        case .trashItems(let deviceIdentity, let items, let actionName):
+            let device = try deviceForTrashIdentity(deviceIdentity)
             var createdRecords: [TrashRecord] = []
             for item in items {
                 let file = AndroidFile(
@@ -792,17 +870,25 @@ public final class AppModel: ObservableObject {
             }
             selectedFileIDs.subtract(items.map(\.path))
             try? await refreshFilesThrowing()
-            return .restoreTrash(deviceSerial: deviceSerial, records: createdRecords, actionName: actionName)
+            return .restoreTrash(deviceIdentity: deviceIdentity, records: createdRecords, actionName: actionName)
 
-        case .restoreTrash(let deviceSerial, let records, let actionName):
-            let device = try deviceForFileHistory(serial: deviceSerial)
-            for record in records {
+        case .restoreTrash(let deviceIdentity, let records, let actionName):
+            let device = try deviceForTrashIdentity(deviceIdentity)
+            let deviceScope = trashScope(for: device)
+            let scopedRecords = records.filter { deviceScope.contains($0.deviceSerial) }
+            guard scopedRecords.count == records.count else {
+                throw FileOperationError.commandFailed("Trash history contains records from another phone.")
+            }
+            for record in scopedRecords {
                 try await fileRepository.restore(device: device, record: record, replace: false)
             }
-            let restoredIDs = Set(records.map(\.id))
-            try replaceTrashRecords(trashRecords.filter { !restoredIDs.contains($0.id) })
+            let restoredIDs = Set(scopedRecords.map(\.id))
+            try replaceTrashRecords(
+                trashRecords.filter { !restoredIDs.contains($0.id) },
+                deviceIdentity: deviceIdentity
+            )
             try? await refreshFilesThrowing()
-            let items = records.map {
+            let items = scopedRecords.map {
                 RemoteClipboardItem(
                     path: $0.originalPath,
                     name: $0.name,
@@ -810,7 +896,7 @@ public final class AppModel: ObservableObject {
                     size: $0.size
                 )
             }
-            return .trashItems(deviceSerial: deviceSerial, items: items, actionName: actionName)
+            return .trashItems(deviceIdentity: deviceIdentity, items: items, actionName: actionName)
 
         case .copyItems(let deviceSerial, let items, let destination, let destinationNames, let actionName):
             let device = try deviceForFileHistory(serial: deviceSerial)
@@ -891,10 +977,22 @@ public final class AppModel: ObservableObject {
     }
 
     private func deviceForFileHistory(serial: String) throws -> AndroidDevice {
-        if let device = devices.first(where: { $0.serial == serial && $0.state == .device }) {
+        if let device = devices.first(where: {
+            $0.state == .device
+                && ($0.physicalDeviceID == serial || $0.availableSerials.contains(serial))
+        }) {
             return device
         }
         throw FileOperationError.commandFailed("Reconnect device \(serial) before undoing or redoing this file operation.")
+    }
+
+    private func deviceForTrashIdentity(_ deviceIdentity: String) throws -> AndroidDevice {
+        if let device = selectedDevice,
+           device.state == .device,
+           trashScope(for: device).contains(deviceIdentity) {
+            return device
+        }
+        throw FileOperationError.commandFailed("Reconnect and select the phone for this Trash operation before trying again.")
     }
 
     public var selectedFiles: [AndroidFile] {
@@ -1583,6 +1681,128 @@ public final class AppModel: ObservableObject {
         wirelessADBSetupPresentation = nil
     }
 
+    public func switchADBConnectionToUSB(for deviceID: AndroidDevice.ID) async {
+        guard let device = devices.first(where: { $0.id == deviceID }),
+              device.state == .device,
+              device.connectionKind == .wifi,
+              !updatingWirelessADBDeviceIDs.contains(deviceID) else {
+            return
+        }
+
+        updatingWirelessADBDeviceIDs.insert(deviceID)
+        defer { updatingWirelessADBDeviceIDs.remove(deviceID) }
+        statusMessage = "Switching \(device.title) to USB…"
+
+        do {
+            if device.usbSerial == nil {
+                try await deviceManager.switchToUSB(device: device)
+            }
+
+            let preferredUSBSerial = device.usbSerial
+            let found = try await waitForADBDeviceSnapshot(
+                physicalDeviceID: deviceID,
+                preferredSerial: preferredUSBSerial,
+                require: { $0.connectionKind == .usb }
+            )
+            let snapshot = applyADBDeviceSnapshot(found)
+            guard let refreshed = devices.first(where: { $0.id == deviceID }),
+                  refreshed.connectionKind == .usb,
+                  refreshed.state == .device else {
+                throw ADBWirelessConnectionError.usbRestoreFailed(
+                    "The USB endpoint did not reappear."
+                )
+            }
+            wirelessADBSetupStates[deviceID] = nil
+            wirelessADBSetupPresentation = nil
+            if snapshot.selectedEndpointChanged || selectedDeviceID != deviceID {
+                selectedDeviceID = deviceID
+                loadSelectedADBDeviceInBackground()
+            }
+            statusMessage = "\(refreshed.title) is connected over USB."
+        } catch is CancellationError {
+            return
+        } catch {
+            alert = UserAlert(title: "Couldn’t Switch to USB", message: error.localizedDescription)
+            statusMessage = "The Wi-Fi connection is still selected."
+        }
+    }
+
+    public func disconnectADBWiFi(for deviceID: AndroidDevice.ID) async {
+        guard let device = devices.first(where: { $0.id == deviceID }),
+              device.state == .device,
+              device.hasWirelessEndpoint,
+              !updatingWirelessADBDeviceIDs.contains(deviceID) else {
+            return
+        }
+
+        updatingWirelessADBDeviceIDs.insert(deviceID)
+        defer { updatingWirelessADBDeviceIDs.remove(deviceID) }
+        statusMessage = "Disconnecting \(device.title) from Wi-Fi…"
+
+        do {
+            try await deviceManager.disconnectWirelessADB(device: device)
+            let found = try await waitForADBDeviceSnapshot(
+                physicalDeviceID: deviceID,
+                preferredSerial: device.usbSerial,
+                require: { !$0.hasWirelessEndpoint },
+                allowMissingDevice: device.usbSerial == nil
+            )
+            if let refreshed = found.first(where: { $0.id == deviceID }),
+               refreshed.hasWirelessEndpoint {
+                throw ADBWirelessConnectionError.disconnectFailed(
+                    endpoint: refreshed.wirelessSerials.joined(separator: ", "),
+                    message: "The endpoint is still present after disconnect."
+                )
+            }
+            let snapshot = applyADBDeviceSnapshot(found)
+            wirelessADBSetupStates[deviceID] = nil
+            wirelessADBSetupPresentation = nil
+            if let refreshed = devices.first(where: { $0.id == deviceID }) {
+                if snapshot.selectedEndpointChanged {
+                    loadSelectedADBDeviceInBackground()
+                }
+                statusMessage = "Wi-Fi disconnected. \(refreshed.title) is using USB."
+            } else {
+                statusMessage = "Wi-Fi disconnected. Connect a USB cable to use this device."
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            alert = UserAlert(title: "Couldn’t Disconnect Wi-Fi", message: error.localizedDescription)
+            statusMessage = "The Wi-Fi connection is still active."
+        }
+    }
+
+    private func waitForADBDeviceSnapshot(
+        physicalDeviceID: AndroidDevice.ID,
+        preferredSerial: String?,
+        require predicate: (AndroidDevice) -> Bool,
+        allowMissingDevice: Bool = false
+    ) async throws -> [AndroidDevice] {
+        var preferences = preferredADBSerialsByPhysicalDeviceID
+        if let preferredSerial {
+            preferences[physicalDeviceID] = preferredSerial
+        } else {
+            preferences[physicalDeviceID] = nil
+        }
+
+        var latest: [AndroidDevice] = []
+        for attempt in 0..<8 {
+            if attempt > 0 {
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            latest = try await deviceManager.devices(
+                preferredSerialsByPhysicalDeviceID: preferences
+            )
+            guard let device = latest.first(where: { $0.id == physicalDeviceID }) else {
+                if allowMissingDevice { return latest }
+                continue
+            }
+            if predicate(device) { return latest }
+        }
+        return latest
+    }
+
     public func wirelessADBSetupSheetDidDismiss() {
         wirelessADBPreflightTask?.cancel()
         wirelessADBPreflightTask = nil
@@ -1616,10 +1836,22 @@ public final class AppModel: ObservableObject {
             do {
                 let endpoint = try await self.deviceManager.enableWirelessADB(device: device)
                 self.wirelessADBSetupStates[deviceID] = .ready(endpoint: endpoint)
-                let found = try await self.deviceManager.devices()
-                _ = self.applyADBDeviceSnapshot(found)
-                if found.contains(where: { $0.id == endpoint && $0.state == .device }) {
-                    self.selectADBDevice(id: endpoint)
+                var preferences = self.preferredADBSerialsByPhysicalDeviceID
+                preferences[deviceID] = endpoint
+                let found = try await self.deviceManager.devices(
+                    preferredSerialsByPhysicalDeviceID: preferences
+                )
+                let snapshot = self.applyADBDeviceSnapshot(found)
+                if found.contains(where: {
+                    $0.id == deviceID && $0.serial == endpoint && $0.state == .device
+                }) {
+                    if self.selectedDeviceID == deviceID {
+                        if snapshot.selectedEndpointChanged {
+                            self.loadSelectedADBDeviceInBackground()
+                        }
+                    } else {
+                        self.selectADBDevice(id: deviceID)
+                    }
                 }
                 if self.wirelessADBSetupPresentation?.deviceID == device.id {
                     self.wirelessADBSetupPresentation?.phase = .connected(endpoint: endpoint)
@@ -1663,7 +1895,9 @@ public final class AppModel: ObservableObject {
         await performCancellableRead("Refreshing devices...", deviceScoped: false) { [self] in
             let found: [AndroidDevice]
             do {
-                found = try await deviceManager.devices()
+                found = try await deviceManager.devices(
+                    preferredSerialsByPhysicalDeviceID: preferredADBSerialsByPhysicalDeviceID
+                )
             } catch FileOperationError.missingTool {
                 clearADBOnlyState(clearDevices: true)
                 adbRuntimeIssue = "Phone tools are not installed."
@@ -1687,7 +1921,8 @@ public final class AppModel: ObservableObject {
             }
 
             adbRuntimeIssue = nil
-            let adbBecameReady = applyADBDeviceSnapshot(found)
+            let snapshot = applyADBDeviceSnapshot(found)
+            let adbBecameReady = snapshot.becameReady
             suppressedToolSetup.remove(.adb)
             if let device = selectedDevice, device.state == .device {
                 if adbBecameReady, connectionMode == .adb {
@@ -1716,6 +1951,8 @@ public final class AppModel: ObservableObject {
     public func pollDeviceConnections() async {
         guard !isPreparingForTermination,
               !isPollingDeviceConnections,
+              updatingWirelessADBDeviceIDs.isEmpty,
+              wirelessADBSetupTasks.isEmpty,
               !isPrefetchingStorageCategories else { return }
         if isUSBTransferSelected, usbTransferManager.isADBReleasedForMTPSession {
             statusMessage = usbTransferManager.statusMessage
@@ -1731,13 +1968,16 @@ public final class AppModel: ObservableObject {
         let wasBusy = isBusy
 
         do {
-            let found = try await deviceManager.devices()
+            let found = try await deviceManager.devices(
+                preferredSerialsByPhysicalDeviceID: preferredADBSerialsByPhysicalDeviceID
+            )
             adbRuntimeIssue = nil
             suppressedToolSetup.remove(.adb)
             let previousSelectedDeviceID = selectedDeviceID
-            let adbBecameReady = applyADBDeviceSnapshot(found)
+            let snapshot = applyADBDeviceSnapshot(found)
+            let adbBecameReady = snapshot.becameReady
             let selectedDeviceChanged = previousSelectedDeviceID != selectedDeviceID
-            if (adbBecameReady || selectedDeviceChanged),
+            if (adbBecameReady || selectedDeviceChanged || snapshot.selectedEndpointChanged),
                connectionMode == .adb,
                selectedDevice?.state == .device {
                 if adbBecameReady {
@@ -1858,6 +2098,37 @@ public final class AppModel: ObservableObject {
             usbTransferManager.startBrowsingForFileTransfer()
             statusMessage = "Opening File Transfer mode..."
         }
+    }
+
+    /// Verifies that ADB itself is usable before showing Developer Options
+    /// connection instructions. Tool setup is presented for the exact failing
+    /// executable instead of sending the user into connection troubleshooting.
+    public func prepareDeveloperOptionsOnboarding() async -> Bool {
+        do {
+            try await adb.validateADB()
+            adbRuntimeIssue = nil
+            suppressedToolSetup.remove(.adb)
+            return true
+        } catch FileOperationError.missingTool(let name) {
+            let tool = ToolchainTool(rawValue: name.lowercased()) ?? .adb
+            if tool == .adb {
+                adbRuntimeIssue = "ADB is not installed or could not be found."
+            }
+            presentToolSetup(
+                tool: tool,
+                issue: "\(tool.title) is not installed or could not be found.",
+                force: true
+            )
+        } catch FileOperationError.toolUnavailable(let tool, let reason) {
+            if tool == .adb {
+                adbRuntimeIssue = reason
+            }
+            presentToolSetup(tool: tool, issue: reason, force: true)
+        } catch {
+            adbRuntimeIssue = error.localizedDescription
+            presentToolSetup(tool: .adb, issue: error.localizedDescription, force: true)
+        }
+        return false
     }
 
     public func dismissADBConnectionSetupPrompt() {
@@ -3659,7 +3930,7 @@ public final class AppModel: ObservableObject {
                         replace: false
                     )
                 }
-                recordFileHistory(.moveItems(deviceSerial: device.serial, steps: undoSteps, actionName: "Move"))
+                recordFileHistory(.moveItems(deviceSerial: device.physicalDeviceID, steps: undoSteps, actionName: "Move"))
             }
 
             let refreshPaths = Set(plans.map(\.sourceParent)).union([folder.path])
@@ -4093,7 +4364,11 @@ public final class AppModel: ObservableObject {
 
             if !createdRecords.isEmpty {
                 recordFileHistory(
-                    .restoreTrash(deviceSerial: device.serial, records: createdRecords, actionName: "Move to Trash")
+                    .restoreTrash(
+                        deviceIdentity: trashScope(for: device).identity,
+                        records: createdRecords,
+                        actionName: "Move to Trash"
+                    )
                 )
             }
 
@@ -4143,13 +4418,10 @@ public final class AppModel: ObservableObject {
         )
     }
 
-    func prepareTrashThumbnail(for record: TrashRecord) async {
-        guard selectedDevice?.serial == record.deviceSerial else { return }
-        await prepareThumbnail(for: trashFile(for: record), purpose: .browser)
-    }
-
     func quickLookTrash(record: TrashRecord) {
+        guard let record = visibleTrashRecord(matching: record.id) else { return }
         let file = trashFile(for: record)
+        activeTrashPreviewDeviceIdentity = visibleTrashDeviceScope?.identity
         let entry = PreviewWindowPresenter.SessionEntry(
             id: record.id.uuidString,
             title: record.name,
@@ -4169,8 +4441,7 @@ public final class AppModel: ObservableObject {
             selectedID: entry.id,
             loadURL: { [weak self] _ in
                 guard let self else { throw FileOperationError.noDevice }
-                try self.requireSelectedDevice(for: record)
-                return try await self.cachedPreviewURL(for: file, reportsActivity: false)
+                return try await self.cachedTrashPreviewURL(for: record)
             },
             releaseURL: { [weak self] url in
                 self?.releaseCachedPreviewURL(url)
@@ -4180,6 +4451,7 @@ public final class AppModel: ObservableObject {
     }
 
     func openTrash(record: TrashRecord, with applicationURL: URL? = nil) async {
+        guard let record = visibleTrashRecord(matching: record.id) else { return }
         let file = trashFile(for: record)
         if file.isDirectory {
             quickLookTrash(record: record)
@@ -4187,8 +4459,7 @@ public final class AppModel: ObservableObject {
         }
 
         await performCancellableRead("Opening \(record.name)...") { [self] in
-            try requireSelectedDevice(for: record)
-            let localURL = try await cachedPreviewURL(for: file, reportsActivity: false)
+            let localURL = try await cachedTrashPreviewURL(for: record)
             if let applicationURL {
                 NSWorkspace.shared.open(
                     [localURL],
@@ -4206,7 +4477,8 @@ public final class AppModel: ObservableObject {
     }
 
     func chooseApplicationAndOpenTrash(record: TrashRecord) {
-        guard trashFile(for: record).kind == .file else { return }
+        guard let record = visibleTrashRecord(matching: record.id),
+              trashFile(for: record).kind == .file else { return }
         let panel = NSOpenPanel()
         panel.title = "Choose an Application"
         panel.prompt = "Open"
@@ -4220,17 +4492,12 @@ public final class AppModel: ObservableObject {
     }
 
     func showTrashInfo(record: TrashRecord) {
-        guard selectedDevice?.serial == record.deviceSerial else {
-            alert = UserAlert(
-                title: "Connect the Right Phone",
-                message: "Select device \(record.deviceSerial) before viewing info for \(record.name)."
-            )
-            return
-        }
+        guard let record = visibleTrashRecord(matching: record.id) else { return }
         showFileInfo(file: trashFile(for: record))
     }
 
     func copyTrash(record: TrashRecord) async {
+        guard let record = visibleTrashRecord(matching: record.id) else { return }
         do {
             try requireSelectedDevice(for: record)
         } catch {
@@ -4249,10 +4516,10 @@ public final class AppModel: ObservableObject {
         }
 
         await perform("Renaming \(record.name)...") {
-            let device = try requireSelectedDevice(for: record)
-            guard trashRecords.contains(where: { $0.id == record.id }) else {
+            guard let record = visibleTrashRecord(matching: record.id) else {
                 throw FileOperationError.commandFailed("That item is no longer in Trash.")
             }
+            let device = try requireSelectedDevice(for: record)
 
             let trashDirectory = (record.trashPath as NSString).deletingLastPathComponent
             let safeName = trimmed.replacingOccurrences(of: "/", with: "_")
@@ -4284,7 +4551,7 @@ public final class AppModel: ObservableObject {
             var updatedRecords = trashRecords
             updatedRecords[index] = updatedRecord
             do {
-                try replaceTrashRecords(updatedRecords)
+                try replaceTrashRecords(updatedRecords, deviceIdentity: record.deviceSerial)
             } catch {
                 do {
                     _ = try await fileRepository.rename(
@@ -4307,10 +4574,16 @@ public final class AppModel: ObservableObject {
     private func requireSelectedDevice(for record: TrashRecord) throws -> AndroidDevice {
         guard let device = selectedDevice,
               device.state == .device,
-              device.serial == record.deviceSerial else {
-            throw FileOperationError.commandFailed("Connect and select device \(record.deviceSerial) to use \(record.name).")
+              trashScope(for: device).contains(record.deviceSerial),
+              visibleTrashRecord(matching: record.id) == record else {
+            throw FileOperationError.commandFailed("Connect and select the phone that owns this Trash item before using it.")
         }
         return device
+    }
+
+    private func visibleTrashRecord(matching id: TrashRecord.ID) -> TrashRecord? {
+        guard selectedDevice?.state == .device else { return nil }
+        return trashRecords.first { $0.id == id }
     }
 
     private func releaseOpenedTrashURLLater(_ url: URL) {
@@ -4322,13 +4595,16 @@ public final class AppModel: ObservableObject {
 
     public func restoreTrash(record: TrashRecord, replace: Bool = false) async {
         await perform("Restoring \(record.name)...") {
-            guard let device = selectedDevice else { throw FileOperationError.noDevice }
-            guard device.serial == record.deviceSerial else {
-                throw FileOperationError.commandFailed("This Trash item belongs to device \(record.deviceSerial). Select that device before restoring it.")
+            guard let record = visibleTrashRecord(matching: record.id) else {
+                throw FileOperationError.commandFailed("That Trash item is not available for the selected phone.")
             }
+            let device = try requireSelectedDevice(for: record)
             try await fileRepository.restore(device: device, record: record, replace: replace)
             do {
-                try replaceTrashRecords(trashRecords.filter { $0.id != record.id })
+                try replaceTrashRecords(
+                    trashRecords.filter { $0.id != record.id },
+                    deviceIdentity: record.deviceSerial
+                )
             } catch {
                 do {
                     _ = try await fileRepository.move(
@@ -4347,7 +4623,7 @@ public final class AppModel: ObservableObject {
             }
             recordFileHistory(
                 .trashItems(
-                    deviceSerial: device.serial,
+                    deviceIdentity: trashScope(for: device).identity,
                     items: [
                         RemoteClipboardItem(
                             path: record.originalPath,
@@ -4364,14 +4640,15 @@ public final class AppModel: ObservableObject {
     }
 
     public func permanentlyDeleteTrash(record: TrashRecord) async {
+        guard let record = visibleTrashRecord(matching: record.id) else { return }
         guard confirmPermanentTrashDeletion(record: record) else { return }
         await perform("Deleting \(record.name) permanently...") {
-            guard let device = selectedDevice else { throw FileOperationError.noDevice }
-            guard device.serial == record.deviceSerial else {
-                throw FileOperationError.commandFailed("This Trash item belongs to device \(record.deviceSerial). Select that device before deleting it.")
-            }
+            let device = try requireSelectedDevice(for: record)
             try await fileRepository.deletePermanently(device: device, remotePath: record.trashPath)
-            try replaceTrashRecords(trashRecords.filter { $0.id != record.id })
+            try replaceTrashRecords(
+                trashRecords.filter { $0.id != record.id },
+                deviceIdentity: record.deviceSerial
+            )
             statusMessage = "Deleted \(record.name) permanently."
         }
     }
@@ -4381,6 +4658,10 @@ public final class AppModel: ObservableObject {
         guard !recordsToDelete.isEmpty else {
             return TrashEmptyResult(deletedCount: 0, failures: [])
         }
+        guard let device = selectedDevice, device.state == .device else {
+            return TrashEmptyResult(deletedCount: 0, failures: [])
+        }
+        let deviceScope = trashScope(for: device)
 
         beginTrackedOperation()
         statusMessage = "Emptying Trash..."
@@ -4390,11 +4671,11 @@ public final class AppModel: ObservableObject {
         var failures: [TrashEmptyFailure] = []
 
         for record in recordsToDelete {
-            guard let device = devices.first(where: { $0.serial == record.deviceSerial && $0.state == .device }) else {
+            guard deviceScope.contains(record.deviceSerial) else {
                 failures.append(
                     TrashEmptyFailure(
                         record: record,
-                        message: "Reconnect device \(record.deviceSerial) before deleting this item."
+                        message: "This item belongs to another phone and was not touched."
                     )
                 )
                 continue
@@ -4402,7 +4683,10 @@ public final class AppModel: ObservableObject {
 
             do {
                 try await fileRepository.deletePermanently(device: device, remotePath: record.trashPath)
-                try replaceTrashRecords(trashRecords.filter { $0.id != record.id })
+                try replaceTrashRecords(
+                    trashRecords.filter { $0.id != record.id },
+                    deviceIdentity: record.deviceSerial
+                )
                 deletedCount += 1
             } catch {
                 failures.append(TrashEmptyFailure(record: record, message: error.localizedDescription))
@@ -4503,6 +4787,71 @@ public final class AppModel: ObservableObject {
         }
         scheduleCacheMaintenance()
         return url
+    }
+
+    private func cachedTrashPreviewURL(for record: TrashRecord) async throws -> URL {
+        let device = try requireSelectedDevice(for: record)
+        let file = trashFile(for: record)
+        let deviceIdentity = trashScope(for: device).identity
+        let cacheKey = "trash|\(deviceIdentity)|\(record.id.uuidString)|\(record.trashPath)|\(record.size ?? 0)"
+        let cacheName = await thumbnailService.sourceCacheFileName(
+            cacheKey: cacheKey,
+            originalName: record.name
+        )
+        let cacheURL = try await cacheStore.trashPreviewURL(
+            deviceIdentity: deviceIdentity,
+            cacheName: cacheName
+        )
+
+        if let cachedURL = try await cacheStore.readablePreviewURL(for: cacheURL, encrypt: true) {
+            guard isTrashPreviewRequestCurrent(record: record, device: device) else {
+                await cacheStore.releaseReadablePreview(cachedURL)
+                try? await cacheStore.clearTrashPreviewFiles(deviceIdentity: deviceIdentity)
+                throw CancellationError()
+            }
+            return cachedURL
+        }
+
+        let stagingDirectory = try await cacheStore.makePreviewStagingDirectory()
+        var downloadedURL: URL?
+        defer {
+            if let downloadedURL {
+                try? FileManager.default.removeItem(at: downloadedURL)
+            }
+            try? FileManager.default.removeItem(at: stagingDirectory)
+        }
+
+        downloadedURL = try await fileRepository.pull(
+            device: device,
+            remotePath: file.path,
+            to: stagingDirectory,
+            replace: true
+        )
+        try Task.checkCancellation()
+        guard isTrashPreviewRequestCurrent(record: record, device: device),
+              let downloadedURL else {
+            throw CancellationError()
+        }
+        try await cacheStore.storePreview(from: downloadedURL, at: cacheURL, encrypt: true)
+
+        guard let readableURL = try await cacheStore.readablePreviewURL(for: cacheURL, encrypt: true) else {
+            throw FileOperationError.commandFailed("The protected Trash preview could not be prepared.")
+        }
+        guard isTrashPreviewRequestCurrent(record: record, device: device) else {
+            await cacheStore.releaseReadablePreview(readableURL)
+            try? await cacheStore.clearTrashPreviewFiles(deviceIdentity: deviceIdentity)
+            throw CancellationError()
+        }
+        scheduleCacheMaintenance()
+        return readableURL
+    }
+
+    private func isTrashPreviewRequestCurrent(record: TrashRecord, device: AndroidDevice) -> Bool {
+        !Task.isCancelled
+            && selectedDevice?.id == device.id
+            && selectedDevice?.state == .device
+            && trashScope(for: device).contains(record.deviceSerial)
+            && visibleTrashRecord(matching: record.id) != nil
     }
 
     public func openPreviewLocally() {
@@ -4782,9 +5131,9 @@ public final class AppModel: ObservableObject {
             }
             recordFileHistory(
                 .deletePaths(
-                    deviceSerial: device.serial,
+                    deviceSerial: device.physicalDeviceID,
                     paths: [folder.path],
-                    redo: .createFolders(deviceSerial: device.serial, folders: [folder], actionName: "New Folder"),
+                    redo: .createFolders(deviceSerial: device.physicalDeviceID, folders: [folder], actionName: "New Folder"),
                     actionName: "New Folder"
                 )
             )
@@ -5006,7 +5355,7 @@ public final class AppModel: ObservableObject {
             scheduleFolderReconciliation(at: reconciliationPaths, device: device)
             recordFileHistory(
                 .rename(
-                    deviceSerial: device.serial,
+                    deviceSerial: device.physicalDeviceID,
                     steps: [FileHistoryRenameStep(sourcePath: destinationPath, destinationName: file.name)],
                     actionName: "Rename"
                 )
@@ -5047,7 +5396,7 @@ public final class AppModel: ObservableObject {
             try await refreshFilesThrowing()
             if !undoSteps.isEmpty {
                 recordFileHistory(
-                    .rename(deviceSerial: device.serial, steps: undoSteps.reversed(), actionName: "Batch Rename")
+                    .rename(deviceSerial: device.physicalDeviceID, steps: undoSteps.reversed(), actionName: "Batch Rename")
                 )
             }
             statusMessage = "Renamed \(previews.count) item\(previews.count == 1 ? "" : "s")."
@@ -5243,7 +5592,7 @@ public final class AppModel: ObservableObject {
             switch clipboard.mode {
             case .copy:
                 let redo = FileHistoryOperation.copyItems(
-                    deviceSerial: device.serial,
+                    deviceSerial: device.physicalDeviceID,
                     items: [item],
                     destination: pasteDestination,
                     destinationNames: [queuedDestinationName],
@@ -5253,7 +5602,7 @@ public final class AppModel: ObservableObject {
                     .queuedTransfer(
                         jobID: jobID,
                         completedUndo: .deletePaths(
-                            deviceSerial: device.serial,
+                            deviceSerial: device.physicalDeviceID,
                             paths: [destinationPath],
                             redo: redo,
                             actionName: "Paste"
@@ -5264,7 +5613,7 @@ public final class AppModel: ObservableObject {
                 )
             case .cut:
                 let redo = FileHistoryOperation.moveItems(
-                    deviceSerial: device.serial,
+                    deviceSerial: device.physicalDeviceID,
                     steps: [
                         FileHistoryMoveStep(
                             sourcePath: item.path,
@@ -5276,7 +5625,7 @@ public final class AppModel: ObservableObject {
                     actionName: "Move"
                 )
                 let completedUndo = FileHistoryOperation.moveItems(
-                    deviceSerial: device.serial,
+                    deviceSerial: device.physicalDeviceID,
                     steps: [
                         FileHistoryMoveStep(
                             sourcePath: destinationPath,
@@ -5913,8 +6262,19 @@ public final class AppModel: ObservableObject {
         requestPhoneCapture(.screenshot)
     }
 
-    public func requestScreenRecording() {
+    public func requestScreenRecording(deviceSerial: String? = nil) {
+        if let deviceSerial {
+            guard prepareScreenRecordingSelection(deviceSerial: deviceSerial) else { return }
+        }
         requestPhoneCapture(.recording)
+    }
+
+    public func requestScreenRecordingFromPhoneControl(deviceSerial: String) {
+        guard phoneControlSession(for: deviceSerial) != nil,
+              prepareScreenRecordingSelection(deviceSerial: deviceSerial) else { return }
+        activePhoneCapturePopoverMode = nil
+        PhoneCaptureWindowPresenter.show(model: self, mode: .recording)
+        statusMessage = "Choose displays and audio sources for the recording."
     }
 
     public func requestPhoneControl() {
@@ -6028,6 +6388,26 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    @discardableResult
+    private func prepareScreenRecordingSelection(deviceSerial: String) -> Bool {
+        guard devices.contains(where: { $0.serial == deviceSerial && $0.state == .device }) else {
+            return false
+        }
+        recordingCaptureDeviceSerials.insert(deviceSerial)
+        return true
+    }
+
+    func screenRecordingPhoneAudioSource(for deviceSerial: String) -> PhoneRecordingAudioSource {
+        screenRecordingAudioOptions.phoneSource(for: deviceSerial)
+    }
+
+    func setScreenRecordingPhoneAudioSource(
+        _ source: PhoneRecordingAudioSource,
+        for deviceSerial: String
+    ) {
+        screenRecordingAudioOptions.setPhoneSource(source, for: deviceSerial)
+    }
+
     private func captureDevices(for mode: PhoneCaptureMode, explicitSerial: String? = nil) -> [AndroidDevice] {
         let serials = explicitSerial.map { Set([$0]) } ?? selectedCaptureDeviceSerials(for: mode)
         return devices.filter { serials.contains($0.serial) && $0.state == .device }
@@ -6041,7 +6421,8 @@ public final class AppModel: ObservableObject {
         guard !isCapturingScreenshot,
               screenRecordingSession == nil,
               !isStartingScreenRecording,
-              !isFinishingScreenRecording else { return }
+              !isFinishingScreenRecording,
+              !hasPhoneControlTransitionInProgress else { return }
 
         isCapturingScreenshot = true
         storagePrefetchActivityDidChange()
@@ -6149,16 +6530,22 @@ public final class AppModel: ObservableObject {
               !isCapturingScreenshot,
               !isLaunchingScrcpy,
               !isStartingScreenRecording,
-              !isFinishingScreenRecording else { return }
+              !isFinishingScreenRecording,
+              !hasPhoneControlTransitionInProgress else { return }
 
         isStartingScreenRecording = true
         storagePrefetchActivityDidChange()
         screenRecordingRequestDeviceSerial = deviceSerial
         statusMessage = "Preparing screen recording..."
+        var pendingMacMicrophoneHandle: MacMicrophoneCaptureHandle?
+        var didCommitRecordingSession = false
         defer {
             isStartingScreenRecording = false
             screenRecordingRequestDeviceSerial = nil
             storagePrefetchActivityDidChange()
+            if !didCommitRecordingSession {
+                pendingMacMicrophoneHandle?.cleanup()
+            }
         }
 
         do {
@@ -6167,6 +6554,25 @@ public final class AppModel: ObservableObject {
             try await adb.validateADB()
             let options = normalizedCaptureOptions(screenRecordingOptions)
             screenRecordingOptions = options
+            let captureDeviceSerials = Set(captureDevices.map(\.serial))
+            let audioOptions = screenRecordingAudioOptions.limited(to: captureDeviceSerials)
+
+            if audioOptions.hasPhoneAudio {
+                try await adb.validateScreenRecordingAudioTools(
+                    audioSources: captureDevices.map { audioOptions.phoneSource(for: $0.serial) }
+                )
+                for device in captureDevices where audioOptions.phoneSource(for: device.serial) != .none {
+                    guard phoneControlSession(for: device.serial)?.capturesAudio != true else {
+                        throw FileOperationError.commandFailed(
+                            "Restart Phone Control for \(device.title) without audio before recording that phone's system audio or microphone."
+                        )
+                    }
+                    try await captureService.validatePhoneRecordingAudioSupport(device: device)
+                }
+            }
+            if audioOptions.capturesMacMicrophone {
+                pendingMacMicrophoneHandle = try await macMicrophoneCaptureService.start()
+            }
 
             var restorePlans: [String: ScreenRecordingRestorePlan] = [:]
             for device in captureDevices {
@@ -6197,7 +6603,8 @@ public final class AppModel: ObservableObject {
                         do {
                             let handle = try await captureService.startScreenRecording(
                                 device: device,
-                                options: options
+                                options: options,
+                                audioSource: audioOptions.phoneSource(for: device.serial)
                             )
                             return ScreenRecordingLaunchOutcome(
                                 device: device,
@@ -6238,18 +6645,51 @@ public final class AppModel: ObservableObject {
                     startedAt: handle.startedAt
                 )
             }
-            let session = ScreenRecordingSession(devices: deviceSessions, options: options)
+            let session = ScreenRecordingSession(
+                devices: deviceSessions,
+                options: options,
+                audioOptions: audioOptions
+            )
             screenRecordingHandles = handles
             screenRecordingRestorePlans = restorePlans
+            macMicrophoneCaptureHandle = pendingMacMicrophoneHandle
             screenRecordingSession = session
+            didCommitRecordingSession = true
+            let audioSourceCount = audioOptions.sourceCount(for: captureDeviceSerials)
+            let audioDetail = audioSourceCount == 0
+                ? ""
+                : " with \(audioSourceCount) audio source\(audioSourceCount == 1 ? "" : "s")"
             statusMessage = captureDevices.count > 1
-                ? "Recording \(captureDevices.count) displays."
-                : "Recording \(captureDevices[0].title)."
+                ? "Recording \(captureDevices.count) displays\(audioDetail)."
+                : "Recording \(captureDevices[0].title)\(audioDetail)."
             startScreenRecordingMonitor(sessionID: session.id, handles: handles)
         } catch FileOperationError.commandFailed(let message) where isADBConnectionFailure(message) {
             handleADBConnectionFailure()
         } catch FileOperationError.commandFailed(let message) {
             alert = UserAlert(title: "Recording Couldn't Start", message: message)
+            statusMessage = "Screen recording could not start."
+        } catch FileOperationError.missingTool(let tool) {
+            presentToolSetup(
+                tool: ToolchainTool(rawValue: tool.lowercased()) ?? .scrcpy,
+                resumeAction: .screenRecording(deviceSerial: deviceSerial),
+                force: true
+            )
+        } catch FileOperationError.toolUnavailable(let tool, let reason) {
+            if isTransientToolTimeout(tool: tool, reason: reason) {
+                presentTransientToolTimeout(reason)
+            } else {
+                presentToolSetup(
+                    tool: tool,
+                    issue: reason,
+                    resumeAction: .screenRecording(deviceSerial: deviceSerial),
+                    force: true
+                )
+            }
+        } catch let error as MacMicrophoneCaptureError {
+            alert = UserAlert(
+                title: "Mac Microphone Couldn't Start",
+                message: error.localizedDescription
+            )
             statusMessage = "Screen recording could not start."
         } catch {
             handleOperationError(error)
@@ -6257,7 +6697,7 @@ public final class AppModel: ObservableObject {
     }
 
     private func discardPartiallyStartedRecordings(
-        handles: [String: ADBScreenRecordingProcess],
+        handles: [String: ScreenRecordingProcess],
         restorePlans: [String: ScreenRecordingRestorePlan]
     ) async {
         handles.values.forEach { $0.stop() }
@@ -6269,6 +6709,8 @@ public final class AppModel: ObservableObject {
                 )
                 if let discardedURL {
                     try? FileManager.default.removeItem(at: discardedURL)
+                } else if let localArtifactURL = handle.localArtifactURL {
+                    try? FileManager.default.removeItem(at: localArtifactURL)
                 }
             } else if phoneControlSession(for: serial) == nil {
                 await captureService.restoreScreenRecordingSettings(
@@ -6302,12 +6744,67 @@ public final class AppModel: ObservableObject {
             )
             return
         }
-        await startScreenRecording(deviceSerial: deviceSerial)
+        requestScreenRecordingFromPhoneControl(deviceSerial: deviceSerial)
+    }
+
+    public func restartPhoneControlWithoutAudioForRecording(deviceSerial: String) async {
+        guard let session = phoneControlSession(for: deviceSerial),
+              session.capturesAudio,
+              !hasPhoneControlTransitionInProgress else { return }
+
+        let placementIndex = phoneControlSessions.firstIndex { $0.deviceSerial == deviceSerial }
+        phoneControlsRestartingWithoutAudio.insert(deviceSerial)
+        defer { phoneControlsRestartingWithoutAudio.remove(deviceSerial) }
+        statusMessage = "Restarting Phone Control without audio..."
+        stopPhoneControl(deviceSerial: deviceSerial)
+
+        let deadline = ContinuousClock.now + .seconds(40)
+        while (phoneControlSession(for: deviceSerial) != nil
+            || phoneControlShutdownsInProgress.contains(deviceSerial)),
+            ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard phoneControlSession(for: deviceSerial) == nil,
+              !phoneControlShutdownsInProgress.contains(deviceSerial) else {
+            alert = UserAlert(
+                title: "Phone Control Couldn't Restart",
+                message: "Phone Control for \(session.deviceTitle) is still finishing cleanup. Wait a moment, then try again."
+            )
+            return
+        }
+
+        await launchScrcpy(
+            deviceSerial: deviceSerial,
+            capturesAudioOverride: false,
+            placementIndexOverride: placementIndex
+        )
     }
 
     public func launchScrcpy(deviceSerial: String? = nil) async {
+        guard !hasPhoneControlTransitionInProgress else { return }
+        await launchScrcpy(
+            deviceSerial: deviceSerial,
+            capturesAudioOverride: nil,
+            placementIndexOverride: nil
+        )
+    }
+
+    private func launchScrcpy(
+        deviceSerial: String?,
+        capturesAudioOverride: Bool?,
+        placementIndexOverride: Int?
+    ) async {
         guard let device = deviceSerial.flatMap({ serial in devices.first { $0.serial == serial } }) ?? selectedDevice else {
             handleADBConnectionFailure()
+            return
+        }
+        if let recordingSession = screenRecordingSession,
+           recordingSession.deviceSerials.contains(device.serial),
+           recordingSession.audioOptions.phoneSource(for: device.serial) != .none {
+            alert = UserAlert(
+                title: "Phone Audio Is Recording",
+                message: "Wait until the recording of \(device.title) finishes before opening Phone Control. This keeps Phone Control from competing for the selected audio source."
+            )
             return
         }
         if let session = phoneControlSession(for: device.serial) {
@@ -6321,7 +6818,10 @@ public final class AppModel: ObservableObject {
               !isFinishingScreenRecording else { return }
         isLaunchingScrcpy = true
         storagePrefetchActivityDidChange()
-        let deviceOptions = settings.phoneControlOptions(for: device.serial)
+        var deviceOptions = settings.phoneControlOptions(for: device.serial)
+        if let capturesAudioOverride {
+            deviceOptions.capturesAudio = capturesAudioOverride
+        }
         statusMessage = "Opening Phone Control..."
         defer {
             isLaunchingScrcpy = false
@@ -6351,7 +6851,7 @@ public final class AppModel: ObservableObject {
             let observation: DetachedLaunchObservation
             do {
                 let preferredPlacement = PhoneControlCompanionWindowPresenter.preferredScrcpyPlacement(
-                    sessionIndex: phoneControlSessions.count
+                    sessionIndex: placementIndexOverride ?? phoneControlSessions.count
                 )
                 let placement = preferredPlacement.map {
                     ScrcpyWindowPlacement(
@@ -6375,7 +6875,13 @@ public final class AppModel: ObservableObject {
                 }
                 throw error
             }
-            registerPhoneControl(observation: observation, device: device, restorePlan: restorePlan)
+            registerPhoneControl(
+                observation: observation,
+                device: device,
+                restorePlan: restorePlan,
+                capturesAudio: deviceOptions.capturesAudio,
+                insertionIndex: placementIndexOverride
+            )
             suppressedToolSetup.remove(.scrcpy)
             statusMessage = "Phone Control opened for \(device.title)."
         } catch FileOperationError.noDevice {
@@ -6533,7 +7039,7 @@ public final class AppModel: ObservableObject {
 
     private func startScreenRecordingMonitor(
         sessionID: ScreenRecordingSession.ID,
-        handles: [String: ADBScreenRecordingProcess]
+        handles: [String: ScreenRecordingProcess]
     ) {
         screenRecordingMonitorTask?.cancel()
         screenRecordingMonitorTask = Task { @MainActor [weak self] in
@@ -6558,42 +7064,94 @@ public final class AppModel: ObservableObject {
         beginTrackedOperation()
         defer { endTrackedOperation() }
         let handles = screenRecordingHandles
+        let macMicrophoneHandle = macMicrophoneCaptureHandle
         if interrupt {
             handles.values.forEach { $0.stop() }
             Task.detached(priority: .utility) { [handles] in
-                try? await Task.sleep(for: .seconds(2))
+                // scrcpy needs time to flush the MP4 trailer after SIGINT. A
+                // shorter fallback can leave an otherwise valid recording
+                // unreadable before the normal five-second finalizer returns.
+                try? await Task.sleep(for: .seconds(5))
                 for handle in handles.values where handle.isRunning {
                     handle.terminate()
                 }
             }
         }
+        macMicrophoneHandle?.stop()
         statusMessage = "Saving screen recording..."
         let restorePlans = screenRecordingRestorePlans
         let phoneControlSerials = Set(session.deviceSerials.filter { phoneControlSession(for: $0) != nil })
 
         var sourcesBySerial: [String: CapturedVideoSource] = [:]
+        var supplementalAudio: [CapturedAudioSource] = []
         do {
             let captureService = captureService
-            try await withThrowingTaskGroup(of: (String, CapturedVideoSource).self) { group in
+            var firstFinishError: Error?
+            await withTaskGroup(of: ScreenRecordingFinishOutcome.self) { group in
                 for (serial, handle) in handles {
                     let restorePlan = restorePlans[serial]
                     group.addTask {
-                        let url = try await captureService.finishScreenRecording(
-                            handle: handle,
-                            restorePlan: restorePlan
-                        )
-                        return (serial, CapturedVideoSource(url: url, startedAt: handle.startedAt))
+                        do {
+                            let url = try await captureService.finishScreenRecording(
+                                handle: handle,
+                                restorePlan: restorePlan
+                            )
+                            let requestedOutputSize: CGSize?
+                            switch handle {
+                            case .adb:
+                                requestedOutputSize = nil
+                            case .scrcpy:
+                                requestedOutputSize = session.options.requestedRecordingSize
+                            }
+                            return ScreenRecordingFinishOutcome(
+                                serial: serial,
+                                source: CapturedVideoSource(
+                                    url: url,
+                                    startedAt: handle.startedAt,
+                                    startupTrim: handles.count > 1 ? handle.recommendedStartupTrim : 0,
+                                    requestedOutputSize: requestedOutputSize
+                                ),
+                                error: nil
+                            )
+                        } catch {
+                            return ScreenRecordingFinishOutcome(
+                                serial: serial,
+                                source: nil,
+                                error: error
+                            )
+                        }
                     }
                 }
-                for try await (serial, source) in group {
-                    sourcesBySerial[serial] = source
+                for await outcome in group {
+                    if let source = outcome.source {
+                        sourcesBySerial[outcome.serial] = source
+                    } else if firstFinishError == nil {
+                        firstFinishError = outcome.error
+                    }
                 }
             }
-            let orderedSources = session.deviceSerials.compactMap { sourcesBySerial[$0] }
-            let url = try await captureCompositionService.combineRecordings(orderedSources)
-            if orderedSources.count > 1 {
-                orderedSources.forEach { try? FileManager.default.removeItem(at: $0.url) }
+            if let firstFinishError {
+                throw firstFinishError
             }
+            if session.audioOptions.capturesMacMicrophone {
+                guard let macMicrophoneHandle else {
+                    throw MacMicrophoneCaptureError.recordingFileUnavailable
+                }
+                let audioURL = try macMicrophoneHandle.finalize()
+                supplementalAudio = [CapturedAudioSource(
+                    url: audioURL,
+                    startedAt: macMicrophoneHandle.startedAt
+                )]
+            }
+            let orderedSources = session.deviceSerials.compactMap { sourcesBySerial[$0] }
+            let url = try await captureCompositionService.combineRecordings(
+                orderedSources,
+                supplementalAudio: supplementalAudio
+            )
+            for source in orderedSources where source.url != url {
+                try? FileManager.default.removeItem(at: source.url)
+            }
+            supplementalAudio.forEach { try? FileManager.default.removeItem(at: $0.url) }
             clearScreenRecordingState()
             for serial in phoneControlSerials {
                 await reapplyPhoneControlPresentation(
@@ -6610,6 +7168,9 @@ public final class AppModel: ObservableObject {
                 : "Screen recording saved and opened in a preview window."
         } catch {
             sourcesBySerial.values.forEach { try? FileManager.default.removeItem(at: $0.url) }
+            handles.values.compactMap(\.localArtifactURL).forEach { try? FileManager.default.removeItem(at: $0) }
+            supplementalAudio.forEach { try? FileManager.default.removeItem(at: $0.url) }
+            macMicrophoneHandle?.cleanup()
             clearScreenRecordingState()
             for serial in phoneControlSerials {
                 await reapplyPhoneControlPresentation(
@@ -6619,7 +7180,7 @@ public final class AppModel: ObservableObject {
             }
             alert = UserAlert(
                 title: "Recording Couldn't Finish",
-                message: "The selected displays could not be saved together. Make sure each display is connected, awake, and able to record, then try again."
+                message: error.localizedDescription
             )
             statusMessage = "Screen recording could not be saved."
         }
@@ -6629,6 +7190,7 @@ public final class AppModel: ObservableObject {
         screenRecordingMonitorTask?.cancel()
         screenRecordingMonitorTask = nil
         screenRecordingHandles = [:]
+        macMicrophoneCaptureHandle = nil
         screenRecordingRestorePlans = [:]
         screenRecordingSession = nil
         isFinishingScreenRecording = false
@@ -6651,18 +7213,22 @@ public final class AppModel: ObservableObject {
     private func registerPhoneControl(
         observation: DetachedLaunchObservation,
         device: AndroidDevice,
-        restorePlan: ScreenRecordingRestorePlan
+        restorePlan: ScreenRecordingRestorePlan,
+        capturesAudio: Bool,
+        insertionIndex: Int?
     ) {
         let session = PhoneControlSession(
             deviceSerial: device.serial,
             deviceTitle: device.title,
-            processIdentifier: observation.processIdentifier
+            processIdentifier: observation.processIdentifier,
+            capturesAudio: capturesAudio
         )
         phoneControlMonitorTasks[device.serial]?.cancel()
         phoneControlStopRequests.remove(device.serial)
         phoneControlRestorePlans[device.serial] = restorePlan
         phoneControlSessions.removeAll { $0.deviceSerial == device.serial }
-        phoneControlSessions.append(session)
+        let safeInsertionIndex = min(max(insertionIndex ?? phoneControlSessions.count, 0), phoneControlSessions.count)
+        phoneControlSessions.insert(session, at: safeInsertionIndex)
         phoneControlCapabilityStates[device.serial] = .checking
         startScrcpyForegrounding(processIdentifier: observation.processIdentifier)
         PhoneControlCompanionWindowPresenter.show(
@@ -6695,8 +7261,12 @@ public final class AppModel: ObservableObject {
         guard let session = phoneControlSessions.first(where: { $0.processIdentifier == processIdentifier }) else {
             return
         }
+        phoneControlShutdownsInProgress.insert(session.deviceSerial)
         cancelStorageCategoryPrefetch(clearSignature: false)
-        defer { storagePrefetchActivityDidChange() }
+        defer {
+            phoneControlShutdownsInProgress.remove(session.deviceSerial)
+            storagePrefetchActivityDidChange()
+        }
 
         let stopWasRequested = phoneControlStopRequests.remove(session.deviceSerial) != nil
         let restorePlan = phoneControlRestorePlans.removeValue(forKey: session.deviceSerial)
@@ -7682,10 +8252,19 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    private var preferredADBSerialsByPhysicalDeviceID: [String: String] {
+        devices.reduce(into: [:]) { preferences, device in
+            preferences[device.physicalDeviceID] = device.serial
+        }
+    }
+
     @discardableResult
-    private func applyADBDeviceSnapshot(_ found: [AndroidDevice]) -> Bool {
+    private func applyADBDeviceSnapshot(
+        _ found: [AndroidDevice]
+    ) -> (becameReady: Bool, selectedEndpointChanged: Bool) {
         let hadReadyADBDevice = hasReadyADBDevice
         let previousSelectedDeviceID = selectedDeviceID
+        let previousSelectedSerial = selectedDevice?.serial
         devices = found
         let foundDeviceIDs = Set(found.map(\.id))
         batteryStatuses = batteryStatuses.filter { foundDeviceIDs.contains($0.key) }
@@ -7694,7 +8273,7 @@ public final class AppModel: ObservableObject {
                 return true
             }
             if case .ready(let endpoint) = state {
-                return foundDeviceIDs.contains(endpoint)
+                return found.contains { $0.availableSerials.contains(endpoint) }
             }
             return false
         }
@@ -7711,6 +8290,13 @@ public final class AppModel: ObservableObject {
             adbForwardHistory.removeAll()
         }
 
+        let selectedEndpointChanged = previousSelectedDeviceID == selectedDeviceID
+            && previousSelectedSerial != nil
+            && previousSelectedSerial != selectedDevice?.serial
+        if selectedEndpointChanged {
+            invalidateADBDeviceSession(preservingFileHistory: true)
+        }
+
         if selectedDevice?.state != .device {
             clearADBOnlyState()
             if hadReadyADBDevice, connectionMode == .adb {
@@ -7719,7 +8305,7 @@ public final class AppModel: ObservableObject {
             }
         }
 
-        return !hadReadyADBDevice && hasReadyADBDevice
+        return (!hadReadyADBDevice && hasReadyADBDevice, selectedEndpointChanged)
     }
 
     private func prepareADBReadySurfaceForTransition() {
@@ -7916,7 +8502,7 @@ public final class AppModel: ObservableObject {
             settings.scrcpyToolMode = .automatic
         }
 
-        let installed = await toolchainManager.installManagedTools()
+        let installed = await toolchainManager.installManagedTools(for: request.tool)
         guard installed else {
             settings.adbToolMode = previousADBMode
             settings.scrcpyToolMode = previousScrcpyMode
@@ -8050,9 +8636,13 @@ public final class AppModel: ObservableObject {
         resumeAction: ToolSetupResumeAction = .none,
         force: Bool = false
     ) {
-        statusMessage = tool == .adb
-            ? "Phone tools need setup. File Transfer is still available."
-            : "Phone Control needs setup."
+        if tool == .adb {
+            statusMessage = "Phone tools need setup. File Transfer is still available."
+        } else if case .screenRecording = resumeAction {
+            statusMessage = "Screen recording audio needs Phone Tools setup."
+        } else {
+            statusMessage = "Phone Control needs setup."
+        }
         if force {
             suppressedToolSetup.remove(tool)
         } else if suppressedToolSetup.contains(tool) {
@@ -8084,7 +8674,13 @@ public final class AppModel: ObservableObject {
             case .adb:
                 try await adb.validateADB()
             case .scrcpy:
-                try await adb.validatePhoneControlTools()
+                if case .screenRecording(let deviceSerial) = request.resumeAction {
+                    let sources = captureDevices(for: .recording, explicitSerial: deviceSerial)
+                        .map { screenRecordingAudioOptions.phoneSource(for: $0.serial) }
+                    try await adb.validateScreenRecordingAudioTools(audioSources: sources)
+                } else {
+                    try await adb.validatePhoneControlTools()
+                }
             }
             completeToolSetup(request)
             return true
@@ -8130,6 +8726,8 @@ public final class AppModel: ObservableObject {
             await refreshDevices()
         case .phoneControl:
             await launchScrcpy()
+        case .screenRecording(let deviceSerial):
+            await startScreenRecording(deviceSerial: deviceSerial)
         }
     }
 
@@ -8166,7 +8764,7 @@ public final class AppModel: ObservableObject {
         )
     }
 
-    private func resetADBSessionStateForDeviceChange() {
+    private func resetADBSessionStateForDeviceChange(preservingFileHistory: Bool = false) {
         cancelADBFolderLoading()
         browserReconciliationTask?.cancel()
         browserReconciliationTask = nil
@@ -8213,15 +8811,17 @@ public final class AppModel: ObservableObject {
         folderSizeBytesByPath.removeAll()
         loadingFolderSizePaths.removeAll()
         failedFolderSizePaths.removeAll()
-        fileUndoStack.removeAll()
-        fileRedoStack.removeAll()
-        fileHistoryRevision &+= 1
+        if !preservingFileHistory {
+            fileUndoStack.removeAll()
+            fileRedoStack.removeAll()
+            fileHistoryRevision &+= 1
+        }
     }
 
-    private func invalidateADBDeviceSession() {
+    private func invalidateADBDeviceSession(preservingFileHistory: Bool = false) {
         adbDeviceSessionRevision &+= 1
         cancelDeviceScopedReadWork()
-        resetADBSessionStateForDeviceChange()
+        resetADBSessionStateForDeviceChange(preservingFileHistory: preservingFileHistory)
     }
 
     private func clearADBOnlyState(clearDevices: Bool = false) {
@@ -8557,62 +9157,151 @@ public final class AppModel: ObservableObject {
         return directory.appending(path: "trash-records.json")
     }
 
-    private static func loadTrashRecords(from storage: TrashRecordsStorage) -> [TrashRecord] {
-        do {
-            let url: URL
-            switch storage {
-            case .applicationSupport:
-                url = try trashRecordsURL()
-            case .file(let fileURL):
-                url = fileURL
-            case .memoryOnly:
-                return []
-            }
-            guard FileManager.default.fileExists(atPath: url.path) else { return [] }
-            let data = try Data(contentsOf: url)
-            return try JSONDecoder().decode([TrashRecord].self, from: data)
-        } catch {
-            return []
-        }
+    private func trashScope(for device: AndroidDevice) -> TrashDeviceScope {
+        let provided = trashDeviceScopeProvider(device)
+        let identity = provided.identity.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stableIdentity = identity.isEmpty ? device.physicalDeviceID : identity
+        var legacyIdentifiers = provided.legacyIdentifiers
+        legacyIdentifiers.formUnion(device.availableSerials)
+        legacyIdentifiers.remove(stableIdentity)
+        return TrashDeviceScope(identity: stableIdentity, legacyIdentifiers: legacyIdentifiers)
     }
 
-    private func saveTrashRecords(_ records: [TrashRecord]) throws {
-        let url: URL
-        switch trashRecordsStorage {
-        case .applicationSupport:
-            url = try Self.trashRecordsURL()
-        case .file(let fileURL):
-            try FileManager.default.createDirectory(
-                at: fileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            url = fileURL
-        case .memoryOnly:
+    private func recordsForTrashScope(_ scope: TrashDeviceScope) -> [TrashRecord] {
+        trashRecordsByDeviceIdentity
+            .filter { scope.contains($0.key) }
+            .values
+            .flatMap { $0 }
+    }
+
+    private func refreshVisibleTrashRecords() {
+        guard let device = selectedDevice, device.state == .device else {
+            transitionAwayFromTrashDeviceIfNeeded(to: nil)
+            trashRecords = []
             return
         }
-        let data = try JSONEncoder().encode(records)
-        try data.write(to: url, options: .atomic)
+
+        let scope = trashScope(for: device)
+        transitionAwayFromTrashDeviceIfNeeded(to: scope)
+        let matchingIdentities = trashRecordsByDeviceIdentity.keys.filter(scope.contains)
+        var matchingRecords = recordsForTrashScope(scope)
+
+        let needsIdentityMigration = matchingIdentities.contains { $0 != scope.identity }
+            || matchingRecords.contains { $0.deviceSerial != scope.identity }
+        if needsIdentityMigration {
+            let migrated = matchingRecords.map { $0.assigned(toDeviceIdentity: scope.identity) }
+            var updated = trashRecordsByDeviceIdentity
+            for identity in matchingIdentities {
+                updated[identity] = nil
+            }
+            updated[scope.identity] = migrated
+            do {
+                let persisted = try persistTrashRecords(updated)
+                trashRecordsByDeviceIdentity = persisted
+                matchingRecords = persisted[scope.identity] ?? []
+                trashPersistenceIssue = nil
+            } catch {
+                trashPersistenceIssue = "Trash history is available for this phone, but its device identity could not be updated securely."
+            }
+        }
+
+        trashRecords = matchingRecords.sorted { lhs, rhs in
+            if lhs.deletedAt == rhs.deletedAt { return lhs.id.uuidString < rhs.id.uuidString }
+            return lhs.deletedAt > rhs.deletedAt
+        }
     }
 
-    private func replaceTrashRecords(_ records: [TrashRecord]) throws {
+    private func transitionAwayFromTrashDeviceIfNeeded(to newScope: TrashDeviceScope?) {
+        let previousScope = visibleTrashDeviceScope
+        visibleTrashDeviceScope = newScope
+        guard let previousScope, previousScope.identity != newScope?.identity else { return }
+
+        if activeTrashPreviewDeviceIdentity == previousScope.identity {
+            PreviewWindowPresenter.closeSession()
+            activeTrashPreviewDeviceIdentity = nil
+        }
+
+        let records = trashRecordsByDeviceIdentity
+            .filter { previousScope.contains($0.key) }
+            .values
+            .flatMap { $0 }
+        let thumbnailService = thumbnailService
+        let cacheStore = cacheStore
+        Task {
+            await thumbnailService.removeCachedThumbnails(
+                cacheKeys: Set(records.map(Self.legacyTrashThumbnailCacheKey))
+            )
+            let previewNames = await Self.legacyTrashPreviewCacheNames(
+                records: records,
+                thumbnailService: thumbnailService
+            )
+            await cacheStore.removeLegacyTrashPreviewFiles(cacheNames: previewNames)
+            try? await cacheStore.clearTrashPreviewFiles(deviceIdentity: previousScope.identity)
+        }
+    }
+
+    private func persistTrashRecords(
+        _ recordsByDeviceIdentity: [String: [TrashRecord]]
+    ) throws -> [String: [TrashRecord]] {
+        let archive = TrashRecordsArchive(recordsByDeviceIdentity: recordsByDeviceIdentity)
+        if let trashRecordStore {
+            try trashRecordStore.save(archive)
+        } else if !trashRecordsAreMemoryOnly {
+            throw TrashRecordStoreError.storageUnavailable
+        }
+        return archive.recordsByDeviceIdentity
+    }
+
+    private func replaceTrashRecords(
+        _ records: [TrashRecord],
+        deviceIdentity: String
+    ) throws {
+        let matchingScope = visibleTrashDeviceScope.flatMap { scope in
+            scope.contains(deviceIdentity) ? scope : nil
+        }
+        guard records.allSatisfy({ record in
+            matchingScope?.contains(record.deviceSerial) ?? (record.deviceSerial == deviceIdentity)
+        }) else {
+            throw FileOperationError.commandFailed("Trash information from different phones cannot be combined.")
+        }
+        let canonicalIdentity = matchingScope?.identity ?? deviceIdentity
+        let normalizedRecords = records.map { $0.assigned(toDeviceIdentity: canonicalIdentity) }
+        var updated = trashRecordsByDeviceIdentity
+        if let matchingScope {
+            for identity in updated.keys where matchingScope.contains(identity) {
+                updated[identity] = nil
+            }
+        } else {
+            updated[deviceIdentity] = nil
+        }
+        if !normalizedRecords.isEmpty {
+            updated[canonicalIdentity] = normalizedRecords.sorted { $0.deletedAt > $1.deletedAt }
+        }
+
         do {
-            try saveTrashRecords(records)
-            trashRecords = records
+            trashRecordsByDeviceIdentity = try persistTrashRecords(updated)
+            trashPersistenceIssue = nil
+            refreshVisibleTrashRecords()
         } catch {
+            trashPersistenceIssue = "Trash history could not be saved securely."
             throw FileOperationError.commandFailed(
-                "Trash information could not be saved on this Mac. \(error.localizedDescription)"
+                "Trash information could not be saved securely on this Mac. \(error.localizedDescription)"
             )
         }
     }
 
     private func trashAndRecord(device: AndroidDevice, file: AndroidFile) async throws -> TrashRecord {
+        let scope = trashScope(for: device)
+        let deviceIdentity = scope.identity
         let record = try await fileRepository.trash(device: device, file: file)
-        var updatedRecords = trashRecords
+            .assigned(toDeviceIdentity: deviceIdentity)
+        var updatedRecords = recordsForTrashScope(scope)
+            .map { $0.assigned(toDeviceIdentity: deviceIdentity) }
         updatedRecords.append(record)
         updatedRecords.sort { $0.deletedAt > $1.deletedAt }
 
         do {
-            try replaceTrashRecords(updatedRecords)
+            try replaceTrashRecords(updatedRecords, deviceIdentity: deviceIdentity)
             return record
         } catch {
             do {
@@ -8626,6 +9315,26 @@ public final class AppModel: ObservableObject {
                 "Trash information could not be saved, so \(file.name) was returned to its original location. \(error.localizedDescription)"
             )
         }
+    }
+
+    private static func legacyTrashThumbnailCacheKey(_ record: TrashRecord) -> String {
+        let size = record.size.map(String.init) ?? "unknown-size"
+        return "\(record.deviceSerial)|\(record.trashPath)|\(size)|unknown-date"
+    }
+
+    private static func legacyTrashPreviewCacheNames(
+        records: [TrashRecord],
+        thumbnailService: ThumbnailService
+    ) async -> Set<String> {
+        var names = Set<String>()
+        for record in records {
+            let cacheKey = "\(record.deviceSerial)|\(record.trashPath)|\(record.size ?? 0)|0.0"
+            names.insert(await thumbnailService.sourceCacheFileName(
+                cacheKey: cacheKey,
+                originalName: record.name
+            ))
+        }
+        return names
     }
 }
 
