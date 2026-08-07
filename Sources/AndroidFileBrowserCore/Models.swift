@@ -18,8 +18,14 @@ public enum DeviceState: String, Codable, Sendable {
 }
 
 public struct AndroidDevice: Identifiable, Hashable, Codable, Sendable {
-    public var id: String { serial }
+    /// A canonical identity for the physical Android device. Ready devices use
+    /// Android's hardware serial, so this value remains stable when ADB changes
+    /// between a USB serial and a TCP or mDNS endpoint.
+    public let physicalDeviceID: String
+    public var id: String { physicalDeviceID }
     public let serial: String
+    /// Every currently usable ADB endpoint that resolves to this physical device.
+    public let availableSerials: [String]
     public let state: DeviceState
     public let model: String?
     public let product: String?
@@ -32,9 +38,14 @@ public struct AndroidDevice: Identifiable, Hashable, Codable, Sendable {
         model: String?,
         product: String?,
         transport: String?,
-        usbLocation: String? = nil
+        usbLocation: String? = nil,
+        physicalDeviceID: String? = nil,
+        availableSerials: [String]? = nil
     ) {
+        self.physicalDeviceID = physicalDeviceID ?? serial
         self.serial = serial
+        let serials = availableSerials ?? [serial]
+        self.availableSerials = [serial] + serials.filter { $0 != serial }
         self.state = state
         self.model = model
         self.product = product
@@ -47,10 +58,28 @@ public struct AndroidDevice: Identifiable, Hashable, Codable, Sendable {
     }
 
     public var subtitle: String {
-        [serial, product, transport].compactMap { $0 }.joined(separator: " • ")
+        [availableSerials.joined(separator: ", "), product, transport]
+            .compactMap { $0 }
+            .joined(separator: " • ")
     }
 
     public var connectionKind: ADBConnectionKind {
+        Self.connectionKind(for: serial)
+    }
+
+    public var usbSerial: String? {
+        availableSerials.first { Self.connectionKind(for: $0) == .usb }
+    }
+
+    public var wirelessSerials: [String] {
+        availableSerials.filter { Self.connectionKind(for: $0) == .wifi }
+    }
+
+    public var hasWirelessEndpoint: Bool {
+        !wirelessSerials.isEmpty
+    }
+
+    public static func connectionKind(for serial: String) -> ADBConnectionKind {
         if serial.hasPrefix("emulator-") {
             return .virtual
         }

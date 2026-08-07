@@ -192,6 +192,50 @@ final class ToolchainManagerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: sentinelURL), Data("keep me".utf8))
     }
 
+    func testScrcpyOnlyManagedSetupDoesNotInstallADB() async throws {
+        let testDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: testDirectory) }
+
+        let rootURL = testDirectory.appending(path: "managed-tools", directoryHint: .isDirectory)
+        let fixture = try makeValidToolArchive(in: testDirectory)
+        let installer = try ManagedToolchainInstaller(
+            rootURL: rootURL,
+            release: fixture.release,
+            downloader: LocalArchiveDownloader(archiveURL: fixture.archiveURL),
+            runner: ProcessRunner()
+        )
+
+        let installation = try await installer.install(tools: [.scrcpy])
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: installation.adbURL.path))
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: installation.scrcpyURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: installation.scrcpyServerURL.path))
+    }
+
+    func testScrcpyRepairPreservesExistingManagedADBWithoutReplacingIt() async throws {
+        let testDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: testDirectory) }
+
+        let rootURL = testDirectory.appending(path: "managed-tools", directoryHint: .isDirectory)
+        let fixture = try makeValidToolArchive(in: testDirectory)
+        let installer = try ManagedToolchainInstaller(
+            rootURL: rootURL,
+            release: fixture.release,
+            downloader: LocalArchiveDownloader(archiveURL: fixture.archiveURL),
+            runner: ProcessRunner()
+        )
+        let existingDirectory = installer.installationDirectoryURL
+        try FileManager.default.createDirectory(at: existingDirectory, withIntermediateDirectories: true)
+        let existingADBURL = existingDirectory.appending(path: "adb")
+        let existingADB = Data("existing adb".utf8)
+        try existingADB.write(to: existingADBURL)
+
+        let installation = try await installer.install(tools: [.scrcpy])
+
+        XCTAssertEqual(try Data(contentsOf: installation.adbURL), existingADB)
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: installation.scrcpyURL.path))
+    }
+
     func testADBClientMapsRunnerLaunchFailureToToolUnavailable() async throws {
         let adbURL = URL(fileURLWithPath: "/tmp/test-adb")
         let recorder = ExecutableRecorder()

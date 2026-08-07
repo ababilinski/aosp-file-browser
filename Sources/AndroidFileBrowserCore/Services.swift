@@ -2,15 +2,104 @@ import AppKit
 import Foundation
 
 public actor DeviceManager {
+    private struct CachedPhysicalDeviceIdentity: Sendable {
+        let physicalDeviceID: String
+        let transport: String?
+    }
+
     private let adb: ADBClient
+    private var cachedPhysicalDeviceIdentitiesByEndpoint: [String: CachedPhysicalDeviceIdentity] = [:]
 
     public init(adb: ADBClient) {
         self.adb = adb
     }
 
-    public func devices() async throws -> [AndroidDevice] {
+    public func devices(
+        preferredSerialsByPhysicalDeviceID: [String: String] = [:],
+        physicalDeviceIDHintsBySerial: [String: String] = [:]
+    ) async throws -> [AndroidDevice] {
         let result = try await adb.run(["devices", "-l"])
-        return ADBParsers.parseDevices(result.stdout)
+        let endpoints = ADBParsers.parseDevices(result.stdout)
+        var physicalDeviceIDsBySerial: [String: String] = [:]
+        let currentEndpointsBySerial = Dictionary(
+            uniqueKeysWithValues: endpoints.map { ($0.serial, $0) }
+        )
+        cachedPhysicalDeviceIdentitiesByEndpoint = cachedPhysicalDeviceIdentitiesByEndpoint.filter {
+            endpoint, cachedIdentity in
+            guard let currentEndpoint = currentEndpointsBySerial[endpoint] else { return false }
+            return currentEndpoint.state == .device
+                && currentEndpoint.transport == cachedIdentity.transport
+        }
+
+        for endpoint in endpoints where endpoint.state == .device && endpoint.connectionKind != .virtual {
+            if let physicalDeviceID = physicalDeviceIDHintsBySerial[endpoint.serial] {
+                physicalDeviceIDsBySerial[endpoint.serial] = physicalDeviceID
+                cachedPhysicalDeviceIdentitiesByEndpoint[endpoint.serial] = CachedPhysicalDeviceIdentity(
+                    physicalDeviceID: physicalDeviceID,
+                    transport: endpoint.transport
+                )
+                continue
+            }
+            if let cachedIdentity = cachedPhysicalDeviceIdentitiesByEndpoint[endpoint.serial] {
+                physicalDeviceIDsBySerial[endpoint.serial] = cachedIdentity.physicalDeviceID
+                continue
+            }
+            guard let hardwareSerial = await hardwareSerial(for: endpoint.serial) else { continue }
+            let physicalDeviceID = "android-hardware:\(hardwareSerial)"
+            physicalDeviceIDsBySerial[endpoint.serial] = physicalDeviceID
+            cachedPhysicalDeviceIdentitiesByEndpoint[endpoint.serial] = CachedPhysicalDeviceIdentity(
+                physicalDeviceID: physicalDeviceID,
+                transport: endpoint.transport
+            )
+        }
+
+        return Self.reconcileDevices(
+            endpoints,
+            physicalDeviceIDsBySerial: physicalDeviceIDsBySerial,
+            preferredSerialsByPhysicalDeviceID: preferredSerialsByPhysicalDeviceID
+        )
+    }
+
+    /// Reconciles ADB's endpoint-oriented device list into physical devices.
+    /// This is public so consumers that persist device-scoped state can apply the
+    /// same canonical identity rules as live connection discovery.
+    public nonisolated static func reconcileDevices(
+        _ endpoints: [AndroidDevice],
+        physicalDeviceIDsBySerial: [String: String],
+        preferredSerialsByPhysicalDeviceID: [String: String] = [:]
+    ) -> [AndroidDevice] {
+        var orderedPhysicalDeviceIDs: [String] = []
+        var groupedEndpoints: [String: [AndroidDevice]] = [:]
+
+        for endpoint in endpoints {
+            let physicalDeviceID = physicalDeviceIDsBySerial[endpoint.serial] ?? endpoint.physicalDeviceID
+            if groupedEndpoints[physicalDeviceID] == nil {
+                orderedPhysicalDeviceIDs.append(physicalDeviceID)
+            }
+            groupedEndpoints[physicalDeviceID, default: []].append(endpoint)
+        }
+
+        return orderedPhysicalDeviceIDs.compactMap { physicalDeviceID in
+            guard let group = groupedEndpoints[physicalDeviceID], !group.isEmpty else { return nil }
+            let readyEndpoints = group.filter { $0.state == .device }
+            let selectableEndpoints = readyEndpoints.isEmpty ? group : readyEndpoints
+            let preferredSerial = preferredSerialsByPhysicalDeviceID[physicalDeviceID]
+            let activeEndpoint = selectableEndpoints.first { $0.serial == preferredSerial }
+                ?? selectableEndpoints.first { $0.connectionKind == .usb }
+                ?? selectableEndpoints.first!
+            let availableSerials = selectableEndpoints.map(\.serial)
+
+            return AndroidDevice(
+                serial: activeEndpoint.serial,
+                state: activeEndpoint.state,
+                model: activeEndpoint.model ?? group.compactMap(\.model).first,
+                product: activeEndpoint.product ?? group.compactMap(\.product).first,
+                transport: activeEndpoint.transport,
+                usbLocation: activeEndpoint.usbLocation ?? group.compactMap(\.usbLocation).first,
+                physicalDeviceID: physicalDeviceID,
+                availableSerials: availableSerials
+            )
+        }
     }
 
     public func batteryStatus(device: AndroidDevice) async throws -> BatteryStatus? {
@@ -173,7 +262,11 @@ public actor DeviceManager {
                 let normalized = lastConnectionMessage.lowercased()
                 if connection.exitCode == 0,
                    normalized.contains("connected to") || normalized.contains("already connected") {
-                    if try await devices().contains(where: { $0.serial == endpoint && $0.state == .device }) {
+                    if try await devices(
+                        physicalDeviceIDHintsBySerial: [endpoint: device.physicalDeviceID]
+                    ).contains(where: {
+                        $0.availableSerials.contains(endpoint) && $0.state == .device
+                    }) {
                         return endpoint
                     }
                 }
@@ -191,6 +284,68 @@ public actor DeviceManager {
             message: lastConnectionMessage,
             rollbackMessage: rollbackMessage
         )
+    }
+
+    public func switchToUSB(device: AndroidDevice) async throws {
+        guard device.state == .device else {
+            throw ADBWirelessConnectionError.deviceNotReady
+        }
+        guard device.connectionKind == .wifi else { return }
+
+        let result = try await adb.run(
+            ["-s", device.serial, "usb"],
+            allowFailure: true,
+            timeout: 20
+        )
+        let message = commandMessage(result)
+        guard result.exitCode == 0,
+              message.localizedCaseInsensitiveContains("restarting in USB mode") else {
+            throw ADBWirelessConnectionError.usbRestoreFailed(message)
+        }
+    }
+
+    public func disconnectWirelessADB(device: AndroidDevice) async throws {
+        guard device.state == .device else {
+            throw ADBWirelessConnectionError.deviceNotReady
+        }
+        for endpoint in device.wirelessSerials {
+            let result = try await adb.run(
+                ["disconnect", endpoint],
+                allowFailure: true,
+                timeout: 12
+            )
+            let message = commandMessage(result)
+            guard result.exitCode == 0,
+                  !message.localizedCaseInsensitiveContains("failed") else {
+                throw ADBWirelessConnectionError.disconnectFailed(
+                    endpoint: endpoint,
+                    message: message
+                )
+            }
+        }
+    }
+
+    private func hardwareSerial(for endpoint: String) async -> String? {
+        guard let result = try? await adb.shell(
+            serial: endpoint,
+            "getprop ro.serialno; getprop ro.boot.serialno",
+            allowFailure: true,
+            timeout: 5
+        ), result.exitCode == 0 else {
+            return nil
+        }
+        guard let value = result.stdout
+            .split(whereSeparator: \.isNewline)
+            .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .first(where: { !$0.isEmpty }) else {
+            return nil
+        }
+        switch value.lowercased() {
+        case "unknown", "null", "none":
+            return nil
+        default:
+            return value
+        }
     }
 
     private func restoreUSBADB(serial: String) async -> String {
@@ -227,6 +382,8 @@ public enum ADBWirelessConnectionError: LocalizedError, Equatable, Sendable {
     case wirelessSettingFailed(String)
     case tcpIPFailed(message: String, rollbackMessage: String)
     case connectionFailed(endpoint: String, message: String, rollbackMessage: String)
+    case usbRestoreFailed(String)
+    case disconnectFailed(endpoint: String, message: String)
 
     public var errorDescription: String? {
         switch self {
@@ -242,6 +399,10 @@ public enum ADBWirelessConnectionError: LocalizedError, Equatable, Sendable {
             "ADB could not confirm that network debugging started. \(message)\n\n\(rollbackMessage)"
         case .connectionFailed(let endpoint, let message, let rollbackMessage):
             "ADB enabled network debugging but could not connect to \(endpoint). Keep the cable connected, confirm both devices are on the same Wi-Fi network, and try again. \(message)\n\n\(rollbackMessage)"
+        case .usbRestoreFailed(let message):
+            "Android did not confirm that ADB returned to USB mode. Keep the cable connected and try again. \(message)"
+        case .disconnectFailed(let endpoint, let message):
+            "ADB could not disconnect the Wi-Fi endpoint \(endpoint). \(message)"
         }
     }
 }

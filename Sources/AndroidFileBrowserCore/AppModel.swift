@@ -246,6 +246,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var isPrefetchingStorageCategories = false
     @Published public private(set) var batteryStatuses: [AndroidDevice.ID: BatteryStatus] = [:]
     @Published public private(set) var wirelessADBSetupStates: [AndroidDevice.ID: ADBWirelessSetupState] = [:]
+    @Published public private(set) var updatingWirelessADBDeviceIDs = Set<AndroidDevice.ID>()
     @Published public var wirelessADBSetupPresentation: ADBWirelessSetupPresentation?
     @Published public var pendingRename: AndroidFile?
     @Published public var inlineRenameFileID: AndroidFile.ID?
@@ -883,7 +884,10 @@ public final class AppModel: ObservableObject {
     }
 
     private func deviceForFileHistory(serial: String) throws -> AndroidDevice {
-        if let device = devices.first(where: { $0.serial == serial && $0.state == .device }) {
+        if let device = devices.first(where: {
+            $0.state == .device
+                && ($0.physicalDeviceID == serial || $0.availableSerials.contains(serial))
+        }) {
             return device
         }
         throw FileOperationError.commandFailed("Reconnect device \(serial) before undoing or redoing this file operation.")
@@ -1575,6 +1579,128 @@ public final class AppModel: ObservableObject {
         wirelessADBSetupPresentation = nil
     }
 
+    public func switchADBConnectionToUSB(for deviceID: AndroidDevice.ID) async {
+        guard let device = devices.first(where: { $0.id == deviceID }),
+              device.state == .device,
+              device.connectionKind == .wifi,
+              !updatingWirelessADBDeviceIDs.contains(deviceID) else {
+            return
+        }
+
+        updatingWirelessADBDeviceIDs.insert(deviceID)
+        defer { updatingWirelessADBDeviceIDs.remove(deviceID) }
+        statusMessage = "Switching \(device.title) to USB…"
+
+        do {
+            if device.usbSerial == nil {
+                try await deviceManager.switchToUSB(device: device)
+            }
+
+            let preferredUSBSerial = device.usbSerial
+            let found = try await waitForADBDeviceSnapshot(
+                physicalDeviceID: deviceID,
+                preferredSerial: preferredUSBSerial,
+                require: { $0.connectionKind == .usb }
+            )
+            let snapshot = applyADBDeviceSnapshot(found)
+            guard let refreshed = devices.first(where: { $0.id == deviceID }),
+                  refreshed.connectionKind == .usb,
+                  refreshed.state == .device else {
+                throw ADBWirelessConnectionError.usbRestoreFailed(
+                    "The USB endpoint did not reappear."
+                )
+            }
+            wirelessADBSetupStates[deviceID] = nil
+            wirelessADBSetupPresentation = nil
+            if snapshot.selectedEndpointChanged || selectedDeviceID != deviceID {
+                selectedDeviceID = deviceID
+                loadSelectedADBDeviceInBackground()
+            }
+            statusMessage = "\(refreshed.title) is connected over USB."
+        } catch is CancellationError {
+            return
+        } catch {
+            alert = UserAlert(title: "Couldn’t Switch to USB", message: error.localizedDescription)
+            statusMessage = "The Wi-Fi connection is still selected."
+        }
+    }
+
+    public func disconnectADBWiFi(for deviceID: AndroidDevice.ID) async {
+        guard let device = devices.first(where: { $0.id == deviceID }),
+              device.state == .device,
+              device.hasWirelessEndpoint,
+              !updatingWirelessADBDeviceIDs.contains(deviceID) else {
+            return
+        }
+
+        updatingWirelessADBDeviceIDs.insert(deviceID)
+        defer { updatingWirelessADBDeviceIDs.remove(deviceID) }
+        statusMessage = "Disconnecting \(device.title) from Wi-Fi…"
+
+        do {
+            try await deviceManager.disconnectWirelessADB(device: device)
+            let found = try await waitForADBDeviceSnapshot(
+                physicalDeviceID: deviceID,
+                preferredSerial: device.usbSerial,
+                require: { !$0.hasWirelessEndpoint },
+                allowMissingDevice: device.usbSerial == nil
+            )
+            if let refreshed = found.first(where: { $0.id == deviceID }),
+               refreshed.hasWirelessEndpoint {
+                throw ADBWirelessConnectionError.disconnectFailed(
+                    endpoint: refreshed.wirelessSerials.joined(separator: ", "),
+                    message: "The endpoint is still present after disconnect."
+                )
+            }
+            let snapshot = applyADBDeviceSnapshot(found)
+            wirelessADBSetupStates[deviceID] = nil
+            wirelessADBSetupPresentation = nil
+            if let refreshed = devices.first(where: { $0.id == deviceID }) {
+                if snapshot.selectedEndpointChanged {
+                    loadSelectedADBDeviceInBackground()
+                }
+                statusMessage = "Wi-Fi disconnected. \(refreshed.title) is using USB."
+            } else {
+                statusMessage = "Wi-Fi disconnected. Connect a USB cable to use this device."
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            alert = UserAlert(title: "Couldn’t Disconnect Wi-Fi", message: error.localizedDescription)
+            statusMessage = "The Wi-Fi connection is still active."
+        }
+    }
+
+    private func waitForADBDeviceSnapshot(
+        physicalDeviceID: AndroidDevice.ID,
+        preferredSerial: String?,
+        require predicate: (AndroidDevice) -> Bool,
+        allowMissingDevice: Bool = false
+    ) async throws -> [AndroidDevice] {
+        var preferences = preferredADBSerialsByPhysicalDeviceID
+        if let preferredSerial {
+            preferences[physicalDeviceID] = preferredSerial
+        } else {
+            preferences[physicalDeviceID] = nil
+        }
+
+        var latest: [AndroidDevice] = []
+        for attempt in 0..<8 {
+            if attempt > 0 {
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            latest = try await deviceManager.devices(
+                preferredSerialsByPhysicalDeviceID: preferences
+            )
+            guard let device = latest.first(where: { $0.id == physicalDeviceID }) else {
+                if allowMissingDevice { return latest }
+                continue
+            }
+            if predicate(device) { return latest }
+        }
+        return latest
+    }
+
     public func wirelessADBSetupSheetDidDismiss() {
         wirelessADBPreflightTask?.cancel()
         wirelessADBPreflightTask = nil
@@ -1608,10 +1734,22 @@ public final class AppModel: ObservableObject {
             do {
                 let endpoint = try await self.deviceManager.enableWirelessADB(device: device)
                 self.wirelessADBSetupStates[deviceID] = .ready(endpoint: endpoint)
-                let found = try await self.deviceManager.devices()
-                _ = self.applyADBDeviceSnapshot(found)
-                if found.contains(where: { $0.id == endpoint && $0.state == .device }) {
-                    self.selectADBDevice(id: endpoint)
+                var preferences = self.preferredADBSerialsByPhysicalDeviceID
+                preferences[deviceID] = endpoint
+                let found = try await self.deviceManager.devices(
+                    preferredSerialsByPhysicalDeviceID: preferences
+                )
+                let snapshot = self.applyADBDeviceSnapshot(found)
+                if found.contains(where: {
+                    $0.id == deviceID && $0.serial == endpoint && $0.state == .device
+                }) {
+                    if self.selectedDeviceID == deviceID {
+                        if snapshot.selectedEndpointChanged {
+                            self.loadSelectedADBDeviceInBackground()
+                        }
+                    } else {
+                        self.selectADBDevice(id: deviceID)
+                    }
                 }
                 if self.wirelessADBSetupPresentation?.deviceID == device.id {
                     self.wirelessADBSetupPresentation?.phase = .connected(endpoint: endpoint)
@@ -1655,7 +1793,9 @@ public final class AppModel: ObservableObject {
         await performCancellableRead("Refreshing devices...", deviceScoped: false) { [self] in
             let found: [AndroidDevice]
             do {
-                found = try await deviceManager.devices()
+                found = try await deviceManager.devices(
+                    preferredSerialsByPhysicalDeviceID: preferredADBSerialsByPhysicalDeviceID
+                )
             } catch FileOperationError.missingTool {
                 clearADBOnlyState(clearDevices: true)
                 adbRuntimeIssue = "Phone tools are not installed."
@@ -1679,7 +1819,8 @@ public final class AppModel: ObservableObject {
             }
 
             adbRuntimeIssue = nil
-            let adbBecameReady = applyADBDeviceSnapshot(found)
+            let snapshot = applyADBDeviceSnapshot(found)
+            let adbBecameReady = snapshot.becameReady
             suppressedToolSetup.remove(.adb)
             if let device = selectedDevice, device.state == .device {
                 if adbBecameReady, connectionMode == .adb {
@@ -1707,7 +1848,9 @@ public final class AppModel: ObservableObject {
 
     public func pollDeviceConnections() async {
         guard !isPreparingForTermination,
-              !isPollingDeviceConnections else { return }
+              !isPollingDeviceConnections,
+              updatingWirelessADBDeviceIDs.isEmpty,
+              wirelessADBSetupTasks.isEmpty else { return }
         if isUSBTransferSelected, usbTransferManager.isADBReleasedForMTPSession {
             statusMessage = usbTransferManager.statusMessage
             return
@@ -1718,13 +1861,16 @@ public final class AppModel: ObservableObject {
         let wasBusy = isBusy
 
         do {
-            let found = try await deviceManager.devices()
+            let found = try await deviceManager.devices(
+                preferredSerialsByPhysicalDeviceID: preferredADBSerialsByPhysicalDeviceID
+            )
             adbRuntimeIssue = nil
             suppressedToolSetup.remove(.adb)
             let previousSelectedDeviceID = selectedDeviceID
-            let adbBecameReady = applyADBDeviceSnapshot(found)
+            let snapshot = applyADBDeviceSnapshot(found)
+            let adbBecameReady = snapshot.becameReady
             let selectedDeviceChanged = previousSelectedDeviceID != selectedDeviceID
-            if (adbBecameReady || selectedDeviceChanged),
+            if (adbBecameReady || selectedDeviceChanged || snapshot.selectedEndpointChanged),
                connectionMode == .adb,
                selectedDevice?.state == .device {
                 if adbBecameReady {
@@ -1845,6 +1991,37 @@ public final class AppModel: ObservableObject {
             usbTransferManager.startBrowsingForFileTransfer()
             statusMessage = "Opening File Transfer mode..."
         }
+    }
+
+    /// Verifies that ADB itself is usable before showing Developer Options
+    /// connection instructions. Tool setup is presented for the exact failing
+    /// executable instead of sending the user into connection troubleshooting.
+    public func prepareDeveloperOptionsOnboarding() async -> Bool {
+        do {
+            try await adb.validateADB()
+            adbRuntimeIssue = nil
+            suppressedToolSetup.remove(.adb)
+            return true
+        } catch FileOperationError.missingTool(let name) {
+            let tool = ToolchainTool(rawValue: name.lowercased()) ?? .adb
+            if tool == .adb {
+                adbRuntimeIssue = "ADB is not installed or could not be found."
+            }
+            presentToolSetup(
+                tool: tool,
+                issue: "\(tool.title) is not installed or could not be found.",
+                force: true
+            )
+        } catch FileOperationError.toolUnavailable(let tool, let reason) {
+            if tool == .adb {
+                adbRuntimeIssue = reason
+            }
+            presentToolSetup(tool: tool, issue: reason, force: true)
+        } catch {
+            adbRuntimeIssue = error.localizedDescription
+            presentToolSetup(tool: .adb, issue: error.localizedDescription, force: true)
+        }
+        return false
     }
 
     public func dismissADBConnectionSetupPrompt() {
@@ -3600,7 +3777,7 @@ public final class AppModel: ObservableObject {
                         replace: false
                     )
                 }
-                recordFileHistory(.moveItems(deviceSerial: device.serial, steps: undoSteps, actionName: "Move"))
+                recordFileHistory(.moveItems(deviceSerial: device.physicalDeviceID, steps: undoSteps, actionName: "Move"))
             }
 
             let refreshPaths = Set(plans.map(\.sourceParent)).union([folder.path])
@@ -4034,7 +4211,7 @@ public final class AppModel: ObservableObject {
 
             if !createdRecords.isEmpty {
                 recordFileHistory(
-                    .restoreTrash(deviceSerial: device.serial, records: createdRecords, actionName: "Move to Trash")
+                    .restoreTrash(deviceSerial: device.physicalDeviceID, records: createdRecords, actionName: "Move to Trash")
                 )
             }
 
@@ -4288,7 +4465,7 @@ public final class AppModel: ObservableObject {
             }
             recordFileHistory(
                 .trashItems(
-                    deviceSerial: device.serial,
+                    deviceSerial: device.physicalDeviceID,
                     items: [
                         RemoteClipboardItem(
                             path: record.originalPath,
@@ -4723,9 +4900,9 @@ public final class AppModel: ObservableObject {
             }
             recordFileHistory(
                 .deletePaths(
-                    deviceSerial: device.serial,
+                    deviceSerial: device.physicalDeviceID,
                     paths: [folder.path],
-                    redo: .createFolders(deviceSerial: device.serial, folders: [folder], actionName: "New Folder"),
+                    redo: .createFolders(deviceSerial: device.physicalDeviceID, folders: [folder], actionName: "New Folder"),
                     actionName: "New Folder"
                 )
             )
@@ -4947,7 +5124,7 @@ public final class AppModel: ObservableObject {
             scheduleFolderReconciliation(at: reconciliationPaths, device: device)
             recordFileHistory(
                 .rename(
-                    deviceSerial: device.serial,
+                    deviceSerial: device.physicalDeviceID,
                     steps: [FileHistoryRenameStep(sourcePath: destinationPath, destinationName: file.name)],
                     actionName: "Rename"
                 )
@@ -4988,7 +5165,7 @@ public final class AppModel: ObservableObject {
             try await refreshFilesThrowing()
             if !undoSteps.isEmpty {
                 recordFileHistory(
-                    .rename(deviceSerial: device.serial, steps: undoSteps.reversed(), actionName: "Batch Rename")
+                    .rename(deviceSerial: device.physicalDeviceID, steps: undoSteps.reversed(), actionName: "Batch Rename")
                 )
             }
             statusMessage = "Renamed \(previews.count) item\(previews.count == 1 ? "" : "s")."
@@ -5184,7 +5361,7 @@ public final class AppModel: ObservableObject {
             switch clipboard.mode {
             case .copy:
                 let redo = FileHistoryOperation.copyItems(
-                    deviceSerial: device.serial,
+                    deviceSerial: device.physicalDeviceID,
                     items: [item],
                     destination: pasteDestination,
                     destinationNames: [queuedDestinationName],
@@ -5194,7 +5371,7 @@ public final class AppModel: ObservableObject {
                     .queuedTransfer(
                         jobID: jobID,
                         completedUndo: .deletePaths(
-                            deviceSerial: device.serial,
+                            deviceSerial: device.physicalDeviceID,
                             paths: [destinationPath],
                             redo: redo,
                             actionName: "Paste"
@@ -5205,7 +5382,7 @@ public final class AppModel: ObservableObject {
                 )
             case .cut:
                 let redo = FileHistoryOperation.moveItems(
-                    deviceSerial: device.serial,
+                    deviceSerial: device.physicalDeviceID,
                     steps: [
                         FileHistoryMoveStep(
                             sourcePath: item.path,
@@ -5217,7 +5394,7 @@ public final class AppModel: ObservableObject {
                     actionName: "Move"
                 )
                 let completedUndo = FileHistoryOperation.moveItems(
-                    deviceSerial: device.serial,
+                    deviceSerial: device.physicalDeviceID,
                     steps: [
                         FileHistoryMoveStep(
                             sourcePath: destinationPath,
@@ -7530,10 +7707,19 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    private var preferredADBSerialsByPhysicalDeviceID: [String: String] {
+        devices.reduce(into: [:]) { preferences, device in
+            preferences[device.physicalDeviceID] = device.serial
+        }
+    }
+
     @discardableResult
-    private func applyADBDeviceSnapshot(_ found: [AndroidDevice]) -> Bool {
+    private func applyADBDeviceSnapshot(
+        _ found: [AndroidDevice]
+    ) -> (becameReady: Bool, selectedEndpointChanged: Bool) {
         let hadReadyADBDevice = hasReadyADBDevice
         let previousSelectedDeviceID = selectedDeviceID
+        let previousSelectedSerial = selectedDevice?.serial
         devices = found
         let foundDeviceIDs = Set(found.map(\.id))
         batteryStatuses = batteryStatuses.filter { foundDeviceIDs.contains($0.key) }
@@ -7542,7 +7728,7 @@ public final class AppModel: ObservableObject {
                 return true
             }
             if case .ready(let endpoint) = state {
-                return foundDeviceIDs.contains(endpoint)
+                return found.contains { $0.availableSerials.contains(endpoint) }
             }
             return false
         }
@@ -7559,6 +7745,13 @@ public final class AppModel: ObservableObject {
             adbForwardHistory.removeAll()
         }
 
+        let selectedEndpointChanged = previousSelectedDeviceID == selectedDeviceID
+            && previousSelectedSerial != nil
+            && previousSelectedSerial != selectedDevice?.serial
+        if selectedEndpointChanged {
+            invalidateADBDeviceSession(preservingFileHistory: true)
+        }
+
         if selectedDevice?.state != .device {
             clearADBOnlyState()
             if hadReadyADBDevice, connectionMode == .adb {
@@ -7567,7 +7760,7 @@ public final class AppModel: ObservableObject {
             }
         }
 
-        return !hadReadyADBDevice && hasReadyADBDevice
+        return (!hadReadyADBDevice && hasReadyADBDevice, selectedEndpointChanged)
     }
 
     private func prepareADBReadySurfaceForTransition() {
@@ -7762,7 +7955,7 @@ public final class AppModel: ObservableObject {
             settings.scrcpyToolMode = .automatic
         }
 
-        let installed = await toolchainManager.installManagedTools()
+        let installed = await toolchainManager.installManagedTools(for: request.tool)
         guard installed else {
             settings.adbToolMode = previousADBMode
             settings.scrcpyToolMode = previousScrcpyMode
@@ -8012,7 +8205,7 @@ public final class AppModel: ObservableObject {
         )
     }
 
-    private func resetADBSessionStateForDeviceChange() {
+    private func resetADBSessionStateForDeviceChange(preservingFileHistory: Bool = false) {
         cancelADBFolderLoading()
         browserReconciliationTask?.cancel()
         browserReconciliationTask = nil
@@ -8059,15 +8252,17 @@ public final class AppModel: ObservableObject {
         folderSizeBytesByPath.removeAll()
         loadingFolderSizePaths.removeAll()
         failedFolderSizePaths.removeAll()
-        fileUndoStack.removeAll()
-        fileRedoStack.removeAll()
-        fileHistoryRevision &+= 1
+        if !preservingFileHistory {
+            fileUndoStack.removeAll()
+            fileRedoStack.removeAll()
+            fileHistoryRevision &+= 1
+        }
     }
 
-    private func invalidateADBDeviceSession() {
+    private func invalidateADBDeviceSession(preservingFileHistory: Bool = false) {
         adbDeviceSessionRevision &+= 1
         cancelDeviceScopedReadWork()
-        resetADBSessionStateForDeviceChange()
+        resetADBSessionStateForDeviceChange(preservingFileHistory: preservingFileHistory)
     }
 
     private func clearADBOnlyState(clearDevices: Bool = false) {
