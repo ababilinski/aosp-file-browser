@@ -12,7 +12,23 @@ struct TrashView: View {
             header
             Divider()
 
-            if model.trashRecords.isEmpty {
+            if let issue = model.trashPersistenceIssue {
+                Label(issue, systemImage: "lock.trianglebadge.exclamationmark")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Divider()
+            }
+
+            if !model.hasReadyADBDevice {
+                CompatibleContentUnavailableView(
+                    "Connect a Phone to View Trash",
+                    systemImage: "iphone.slash",
+                    description: Text("Trash stays private and appears only while its phone is connected and selected.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.trashRecords.isEmpty {
                 CompatibleContentUnavailableView(
                     "Trash Is Empty",
                     systemImage: "trash",
@@ -50,15 +66,17 @@ struct TrashView: View {
             Label("Trash", systemImage: "trash")
                 .font(.title3.weight(.semibold))
             Spacer()
-            Text("\(model.trashRecords.count) item\(model.trashRecords.count == 1 ? "" : "s")")
-                .foregroundStyle(.secondary)
-            Button {
-                isConfirmingEmptyTrash = true
-            } label: {
-                Label("Empty Trash", systemImage: "trash.slash")
+            if model.hasReadyADBDevice {
+                Text("\(model.trashRecords.count) item\(model.trashRecords.count == 1 ? "" : "s")")
+                    .foregroundStyle(.secondary)
+                Button {
+                    isConfirmingEmptyTrash = true
+                } label: {
+                    Label("Empty Trash", systemImage: "trash.slash")
+                }
+                .disabled(model.trashRecords.isEmpty || model.isBusy)
+                .help("Permanently delete every item in this phone's Trash.")
             }
-            .disabled(model.trashRecords.isEmpty || model.isBusy)
-            .help("Permanently delete every item in Trash.")
         }
         .padding(14)
     }
@@ -113,25 +131,23 @@ struct TrashView: View {
 
     private var emptyTrashConfirmationMessage: String {
         let count = model.trashRecords.count
-        let deviceNames = Set(model.trashRecords.map(deviceName)).sorted()
         let itemText = count == 1 ? "the item" : "all \(count) items"
-        let deviceText = deviceNames.count == 1
-            ? "\(deviceNames[0])"
-            : "\(deviceNames.count) phones"
-        return "This permanently deletes \(itemText) from \(deviceText). Items on disconnected phones stay in Trash. This cannot be undone."
+        return "This permanently deletes \(itemText) from the selected phone. Trash belonging to other phones is not shown or changed. This cannot be undone."
     }
 
     private func selectedRecords(in selection: Set<TrashRecord.ID>) -> [TrashRecord] {
         model.trashRecords.filter { selection.contains($0.id) }
     }
 
-    private func deviceName(for record: TrashRecord) -> String {
-        model.devices.first(where: { $0.serial == record.deviceSerial })?.title ?? record.deviceSerial
+    private func deviceName(for _: TrashRecord) -> String {
+        model.selectedDevice?.title ?? "Selected Phone"
     }
 
     private func emptyTrash() {
+        let selectedDeviceID = model.selectedDeviceID
         Task {
             let result = await model.emptyTrash()
+            guard model.selectedDeviceID == selectedDeviceID else { return }
             guard !result.failures.isEmpty else { return }
             let details = result.failures.prefix(5).map { "\($0.record.name): \($0.message)" }
             let remaining = result.failures.count - details.count
@@ -149,16 +165,10 @@ private struct TrashThumbnailView: View {
     let record: TrashRecord
 
     var body: some View {
-        MediaThumbnailView(
-            model: model,
-            file: model.trashFile(for: record),
-            size: 26,
-            purpose: .browser,
-            automaticallyPrepares: false
-        )
-        .task(id: record.trashPath) {
-            await model.prepareTrashThumbnail(for: record)
-        }
+        Image(systemName: model.trashFile(for: record).fallbackSymbol)
+            .foregroundStyle(.secondary)
+            .frame(width: 26, height: 26)
+            .accessibilityHidden(true)
     }
 }
 

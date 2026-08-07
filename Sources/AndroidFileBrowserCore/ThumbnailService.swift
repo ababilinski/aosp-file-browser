@@ -29,6 +29,14 @@ public actor ThumbnailService {
         return thumbnailURL
     }
 
+    public func removeCachedThumbnails(cacheKeys: Set<String>) {
+        for cacheKey in cacheKeys {
+            guard let thumbnailURL = try? thumbnailURL(for: cacheKey) else { continue }
+            try? FileManager.default.removeItem(at: thumbnailURL)
+            lastCacheTouchByPath[thumbnailURL.path] = nil
+        }
+    }
+
     public func migrateLegacyThumbnailIfAvailable(
         legacyCacheKey: String,
         cacheKey: String,

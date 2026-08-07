@@ -115,24 +115,20 @@ final class TerminationStateTests: XCTestCase {
         XCTAssertTrue(model.beginTerminationRequest())
     }
 
-    func testQuitPromptAppearsWheneverTrashContainsAnItem() {
-        let model = makeModel()
+    func testQuitPromptUsesOnlySelectedConnectedPhonesTrash() {
         let record = makeRecord()
+        let model = makeModel(initialTrashRecords: [record])
 
-        XCTAssertFalse(model.shouldConfirmEmptyTrashAtSessionEnd)
-
-        model.trashRecords.append(record)
         XCTAssertTrue(model.shouldConfirmEmptyTrashAtSessionEnd)
-        XCTAssertEqual(model.trashItemsAddedThisSessionCount, 1)
+        XCTAssertEqual(model.trashItemsAddedThisSessionCount, 0)
 
-        model.trashRecords.removeAll { $0.id == record.id }
+        model.devices = []
         XCTAssertFalse(model.shouldConfirmEmptyTrashAtSessionEnd)
     }
 
-    func testAutomaticTrashBehaviorUsesAllPersistedRecordsWithoutPrompting() {
-        let model = makeModel()
+    func testAutomaticTrashBehaviorUsesSelectedConnectedPhonesRecordsWithoutPrompting() {
+        let model = makeModel(initialTrashRecords: [makeRecord()])
         model.settings.trashQuitBehavior = .emptyAutomatically
-        model.trashRecords.append(makeRecord())
 
         XCTAssertTrue(model.shouldAutomaticallyEmptyTrashAtSessionEnd)
         XCTAssertFalse(model.shouldConfirmEmptyTrashAtSessionEnd)
@@ -144,17 +140,30 @@ final class TerminationStateTests: XCTestCase {
 
     private func makeModel(
         transferQueue: TransferQueue = TransferQueue(),
-        usbTransferManager: USBTransferManager = USBTransferManager()
+        usbTransferManager: USBTransferManager = USBTransferManager(),
+        initialTrashRecords: [TrashRecord] = []
     ) -> AppModel {
         let suiteName = "AndroidFileBrowserCoreTests.TerminationState.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
-        return AppModel(
+        let model = AppModel(
             settings: AppSettings(defaults: defaults),
             usbTransferManager: usbTransferManager,
             transferQueue: transferQueue,
-            initialTrashRecords: []
+            initialTrashRecords: initialTrashRecords
         )
+        if let record = initialTrashRecords.first {
+            let device = AndroidDevice(
+                serial: record.deviceSerial,
+                state: .device,
+                model: "Test Phone",
+                product: nil,
+                transport: nil
+            )
+            model.devices = [device]
+            model.selectedDeviceID = device.id
+        }
+        return model
     }
 
     private func makeRecord() -> TrashRecord {

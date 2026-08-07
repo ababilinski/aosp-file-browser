@@ -206,8 +206,14 @@ struct AndroidFileBrowserApp: App {
 
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
+    private enum TerminationPhase {
+        case idle
+        case awaitingReply
+        case approved
+    }
+
     private weak var model: AppModel?
-    private var isFinishingTermination = false
+    private var terminationPhase: TerminationPhase = .idle
 
     func configure(model: AppModel) {
         self.model = model
@@ -230,7 +236,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !isFinishingTermination else { return .terminateLater }
+        switch terminationPhase {
+        case .approved:
+            return .terminateNow
+        case .awaitingReply:
+            return .terminateLater
+        case .idle:
+            break
+        }
         guard let model else { return .terminateNow }
         guard model.beginTerminationRequest() else {
             presentOperationInProgressAlert()
@@ -253,13 +266,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let totalCount = model.trashRecords.count
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Empty Trash before quitting?"
-        alert.informativeText = trashPromptDetail(totalCount: totalCount)
-        alert.addButton(withTitle: "Empty Trash")
-        alert.addButton(withTitle: "Keep Trash")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = "Delete Trash Contents?"
+        alert.informativeText = trashDeletionPromptDetail(totalCount: totalCount)
+        alert.addButton(withTitle: "Delete").hasDestructiveAction = true
+        alert.addButton(withTitle: "Don’t Delete").keyEquivalent = "\u{1b}"
         alert.showsSuppressionButton = true
-        alert.suppressionButton?.title = "Don't ask again"
+        alert.suppressionButton?.title = "Remember my choice"
 
         let response = alert.runModal()
         if alert.suppressionButton?.state == .on {
@@ -304,7 +316,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func finishTermination(model: AppModel, sender: NSApplication, emptyTrash: Bool) {
-        isFinishingTermination = true
+        terminationPhase = .awaitingReply
         model.stopAllPhoneControls()
         Task { @MainActor [weak self] in
             guard let self else {
@@ -314,16 +326,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
             if !emptyTrash {
                 await model.preparePreviewCacheForTermination()
-                self.isFinishingTermination = false
-                sender.reply(toApplicationShouldTerminate: true)
+                self.approveTermination(sender)
                 return
             }
 
             let result = await model.emptyTrash()
             if result.isComplete, model.trashRecords.isEmpty {
                 await model.preparePreviewCacheForTermination()
-                self.isFinishingTermination = false
-                sender.reply(toApplicationShouldTerminate: true)
+                self.approveTermination(sender)
                 return
             }
 
@@ -338,18 +348,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             let shouldQuit = failureAlert.runModal() == .alertFirstButtonReturn
             if shouldQuit {
                 await model.preparePreviewCacheForTermination()
-            } else if !shouldQuit {
+                self.approveTermination(sender)
+            } else {
                 model.cancelTerminationRequest()
+                self.terminationPhase = .idle
+                sender.reply(toApplicationShouldTerminate: false)
             }
-            self.isFinishingTermination = false
-            sender.reply(toApplicationShouldTerminate: shouldQuit)
         }
     }
 
-    private func trashPromptDetail(totalCount: Int) -> String {
+    private func approveTermination(_ sender: NSApplication) {
+        terminationPhase = .approved
+        sender.reply(toApplicationShouldTerminate: true)
+    }
+
+    private func trashDeletionPromptDetail(totalCount: Int) -> String {
         totalCount == 1
-            ? "Trash contains 1 item. Emptying it permanently deletes that item."
-            : "Trash contains \(totalCount) items. Emptying it permanently deletes them."
+            ? "Trash contains 1 item. Deleting it permanently cannot be undone. Choose Don’t Delete to keep it for next time."
+            : "Trash contains \(totalCount) items. Deleting them permanently cannot be undone. Choose Don’t Delete to keep them for next time."
     }
 
     private func trashFailureDetail(_ result: TrashEmptyResult, model: AppModel) -> String {
@@ -357,7 +373,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let summary = "\(remainingRecords.count) item\(remainingRecords.count == 1 ? " remains" : "s remain") in Trash. Reconnect the device named beside each item and try again."
         let failuresByRecordID = Dictionary(uniqueKeysWithValues: result.failures.map { ($0.record.id, $0.message) })
         let details = remainingRecords.prefix(4).map { record in
-            let deviceName = model.devices.first(where: { $0.serial == record.deviceSerial })?.title ?? record.deviceSerial
+            let deviceName = model.selectedDevice?.title ?? "Selected phone"
             let message = failuresByRecordID[record.id] ?? "This item was added while Trash was being emptied."
             return "• \(record.name) — \(deviceName): \(message)"
         }.joined(separator: "\n")

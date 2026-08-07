@@ -72,18 +72,12 @@ private struct OptimisticRemoteMovePlan {
     let replacedDestinationSearchResults: [AndroidFile]
 }
 
-private enum TrashRecordsStorage {
-    case applicationSupport
-    case file(URL)
-    case memoryOnly
-}
-
 private indirect enum FileHistoryOperation {
     case createFolders(deviceSerial: String, folders: [FileHistoryFolder], actionName: String)
     case deletePaths(deviceSerial: String, paths: [String], redo: FileHistoryOperation, actionName: String)
     case rename(deviceSerial: String, steps: [FileHistoryRenameStep], actionName: String)
-    case trashItems(deviceSerial: String, items: [RemoteClipboardItem], actionName: String)
-    case restoreTrash(deviceSerial: String, records: [TrashRecord], actionName: String)
+    case trashItems(deviceIdentity: String, items: [RemoteClipboardItem], actionName: String)
+    case restoreTrash(deviceIdentity: String, records: [TrashRecord], actionName: String)
     case copyItems(deviceSerial: String, items: [RemoteClipboardItem], destination: String, destinationNames: [String], actionName: String)
     case moveItems(deviceSerial: String, steps: [FileHistoryMoveStep], actionName: String)
     case queuedTransfer(jobID: UUID, completedUndo: FileHistoryOperation, redo: FileHistoryOperation, actionName: String)
@@ -139,11 +133,17 @@ struct UploadFilePresentation: Hashable {
 
 @MainActor
 public final class AppModel: ObservableObject {
-    @Published public var devices: [AndroidDevice] = []
+    @Published public var devices: [AndroidDevice] = [] {
+        didSet {
+            guard oldValue != devices else { return }
+            refreshVisibleTrashRecords()
+        }
+    }
     @Published public var selectedDeviceID: AndroidDevice.ID? {
         didSet {
             guard oldValue != selectedDeviceID else { return }
             invalidateADBDeviceSession()
+            refreshVisibleTrashRecords()
         }
     }
     @Published public var sidebarSelection: SidebarDestination? {
@@ -214,7 +214,8 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var failedFolderSizePaths = Set<AndroidFile.ID>()
     @Published public private(set) var isLoadingCurrentFolder = false
     @Published public private(set) var isSwitchingADBDevice = false
-    @Published public var trashRecords: [TrashRecord] = []
+    @Published public private(set) var trashRecords: [TrashRecord] = []
+    @Published public private(set) var trashPersistenceIssue: String?
     @Published public private(set) var fileHistoryRevision = 0
     @Published public private(set) var isRunningFileHistoryOperation = false
     @Published public var packages: [AndroidPackage] = []
@@ -337,6 +338,12 @@ public final class AppModel: ObservableObject {
     private var folderSizeWorkerTask: Task<Void, Never>?
     private var folderSizeWorkerGeneration = 0
     private let trashSessionSnapshot: TrashSessionSnapshot
+    private var trashRecordsByDeviceIdentity: [String: [TrashRecord]]
+    private let trashRecordStore: TrashRecordStore?
+    private let trashRecordsAreMemoryOnly: Bool
+    private let trashDeviceScopeProvider: @Sendable (AndroidDevice) -> TrashDeviceScope
+    private var visibleTrashDeviceScope: TrashDeviceScope?
+    private var activeTrashPreviewDeviceIdentity: String?
     @Published public var expandedTreePaths = Set<String>()
     @Published public private(set) var treeChildrenByPath: [String: [AndroidFile]] = [:]
     @Published public private(set) var loadingTreePaths = Set<String>()
@@ -355,8 +362,6 @@ public final class AppModel: ObservableObject {
     public let toolchainManager: ToolchainManager
     public let usbTransferManager: USBTransferManager
     public let transferQueue: TransferQueue
-    private let trashRecordsStorage: TrashRecordsStorage
-
     public init(
         adb: ADBClient = ADBClient(),
         settings: AppSettings = AppSettings(),
@@ -365,26 +370,62 @@ public final class AppModel: ObservableObject {
         transferQueue: TransferQueue = TransferQueue(),
         cacheStore: AppCacheStore = AppCacheStore(),
         initialTrashRecords: [TrashRecord]? = nil,
-        trashRecordsFileURL: URL? = nil
+        trashRecordsFileURL: URL? = nil,
+        trashRecordsEncryptionKeyData: Data? = nil,
+        trashDeviceScopeProvider: @escaping @Sendable (AndroidDevice) -> TrashDeviceScope = {
+            TrashDeviceScope(
+                identity: $0.physicalDeviceID,
+                legacyIdentifiers: Set($0.availableSerials)
+            )
+        }
     ) {
-        let trashRecordsStorage: TrashRecordsStorage
-        if let trashRecordsFileURL {
-            trashRecordsStorage = .file(trashRecordsFileURL)
-        } else if initialTrashRecords != nil {
+        let trashRecordStore: TrashRecordStore?
+        let trashRecordsAreMemoryOnly: Bool
+        let loadedTrashResult: TrashRecordStoreLoadResult
+        if let initialTrashRecords {
             // Injected records are used by previews and tests. Keep them isolated
             // unless the caller explicitly supplies a file URL.
-            trashRecordsStorage = .memoryOnly
+            if let trashRecordsFileURL {
+                trashRecordStore = TrashRecordStore(
+                    fileURL: trashRecordsFileURL,
+                    encryptionKeyData: trashRecordsEncryptionKeyData
+                )
+                trashRecordsAreMemoryOnly = false
+            } else {
+                trashRecordStore = nil
+                trashRecordsAreMemoryOnly = true
+            }
+            loadedTrashResult = TrashRecordStoreLoadResult(
+                archive: TrashRecordsArchive(records: initialTrashRecords),
+                recoveryNotice: nil,
+                migratedLegacyFile: false,
+                recoveredFromBackup: false
+            )
         } else {
-            trashRecordsStorage = .applicationSupport
+            trashRecordsAreMemoryOnly = false
+            let fileURL = trashRecordsFileURL ?? (try? Self.trashRecordsURL())
+            trashRecordStore = fileURL.map {
+                TrashRecordStore(fileURL: $0, encryptionKeyData: trashRecordsEncryptionKeyData)
+            }
+            loadedTrashResult = trashRecordStore?.load() ?? TrashRecordStoreLoadResult(
+                archive: TrashRecordsArchive(),
+                recoveryNotice: "Trash history storage is unavailable. No Trash metadata was exposed.",
+                migratedLegacyFile: false,
+                recoveredFromBackup: false
+            )
         }
-        let existingTrashRecords = initialTrashRecords ?? Self.loadTrashRecords(from: trashRecordsStorage)
+        let existingTrashRecords = loadedTrashResult.archive.allRecords
         self.adb = adb
         self.settings = settings
         self.toolchainManager = toolchainManager
         self.usbTransferManager = usbTransferManager
         self.transferQueue = transferQueue
         self.cacheStore = cacheStore
-        self.trashRecordsStorage = trashRecordsStorage
+        self.trashRecordStore = trashRecordStore
+        self.trashRecordsAreMemoryOnly = trashRecordsAreMemoryOnly
+        self.trashDeviceScopeProvider = trashDeviceScopeProvider
+        self.trashRecordsByDeviceIdentity = loadedTrashResult.archive.recordsByDeviceIdentity
+        self.trashPersistenceIssue = loadedTrashResult.recoveryNotice
         self.trashSessionSnapshot = TrashSessionSnapshot(recordsAtStart: existingTrashRecords)
         let scanner = MediaStoreScanner(adb: adb)
         self.deviceManager = DeviceManager(adb: adb)
@@ -394,7 +435,7 @@ public final class AppModel: ObservableObject {
         self.captureCompositionService = CaptureCompositionService()
         self.thumbnailService = ThumbnailService()
         self.sidebarSelection = .location(Self.defaultQuickLocations[0])
-        self.trashRecords = existingTrashRecords
+        self.trashRecords = []
         self.usbTransferManager.configureADBReleaseHandler { [adb] in
             do {
                 try await adb.killServer()
@@ -429,6 +470,19 @@ public final class AppModel: ObservableObject {
         }
         self.usbTransferManagerCancellable = usbTransferManager.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
+        }
+
+        let legacyTrashRecords = existingTrashRecords
+        let thumbnailService = self.thumbnailService
+        let cacheStore = self.cacheStore
+        Task {
+            let thumbnailKeys = Set(legacyTrashRecords.map(Self.legacyTrashThumbnailCacheKey))
+            await thumbnailService.removeCachedThumbnails(cacheKeys: thumbnailKeys)
+            let previewNames = await Self.legacyTrashPreviewCacheNames(
+                records: legacyTrashRecords,
+                thumbnailService: thumbnailService
+            )
+            await cacheStore.removeLegacyTrashPreviewFiles(cacheNames: previewNames)
         }
     }
 
@@ -768,8 +822,8 @@ public final class AppModel: ObservableObject {
             try? await refreshFilesThrowing()
             return .rename(deviceSerial: deviceSerial, steps: inverseSteps.reversed(), actionName: actionName)
 
-        case .trashItems(let deviceSerial, let items, let actionName):
-            let device = try deviceForFileHistory(serial: deviceSerial)
+        case .trashItems(let deviceIdentity, let items, let actionName):
+            let device = try deviceForTrashIdentity(deviceIdentity)
             var createdRecords: [TrashRecord] = []
             for item in items {
                 let file = AndroidFile(
@@ -785,17 +839,25 @@ public final class AppModel: ObservableObject {
             }
             selectedFileIDs.subtract(items.map(\.path))
             try? await refreshFilesThrowing()
-            return .restoreTrash(deviceSerial: deviceSerial, records: createdRecords, actionName: actionName)
+            return .restoreTrash(deviceIdentity: deviceIdentity, records: createdRecords, actionName: actionName)
 
-        case .restoreTrash(let deviceSerial, let records, let actionName):
-            let device = try deviceForFileHistory(serial: deviceSerial)
-            for record in records {
+        case .restoreTrash(let deviceIdentity, let records, let actionName):
+            let device = try deviceForTrashIdentity(deviceIdentity)
+            let deviceScope = trashScope(for: device)
+            let scopedRecords = records.filter { deviceScope.contains($0.deviceSerial) }
+            guard scopedRecords.count == records.count else {
+                throw FileOperationError.commandFailed("Trash history contains records from another phone.")
+            }
+            for record in scopedRecords {
                 try await fileRepository.restore(device: device, record: record, replace: false)
             }
-            let restoredIDs = Set(records.map(\.id))
-            try replaceTrashRecords(trashRecords.filter { !restoredIDs.contains($0.id) })
+            let restoredIDs = Set(scopedRecords.map(\.id))
+            try replaceTrashRecords(
+                trashRecords.filter { !restoredIDs.contains($0.id) },
+                deviceIdentity: deviceIdentity
+            )
             try? await refreshFilesThrowing()
-            let items = records.map {
+            let items = scopedRecords.map {
                 RemoteClipboardItem(
                     path: $0.originalPath,
                     name: $0.name,
@@ -803,7 +865,7 @@ public final class AppModel: ObservableObject {
                     size: $0.size
                 )
             }
-            return .trashItems(deviceSerial: deviceSerial, items: items, actionName: actionName)
+            return .trashItems(deviceIdentity: deviceIdentity, items: items, actionName: actionName)
 
         case .copyItems(let deviceSerial, let items, let destination, let destinationNames, let actionName):
             let device = try deviceForFileHistory(serial: deviceSerial)
@@ -891,6 +953,15 @@ public final class AppModel: ObservableObject {
             return device
         }
         throw FileOperationError.commandFailed("Reconnect device \(serial) before undoing or redoing this file operation.")
+    }
+
+    private func deviceForTrashIdentity(_ deviceIdentity: String) throws -> AndroidDevice {
+        if let device = selectedDevice,
+           device.state == .device,
+           trashScope(for: device).contains(deviceIdentity) {
+            return device
+        }
+        throw FileOperationError.commandFailed("Reconnect and select the phone for this Trash operation before trying again.")
     }
 
     public var selectedFiles: [AndroidFile] {
@@ -4211,7 +4282,11 @@ public final class AppModel: ObservableObject {
 
             if !createdRecords.isEmpty {
                 recordFileHistory(
-                    .restoreTrash(deviceSerial: device.physicalDeviceID, records: createdRecords, actionName: "Move to Trash")
+                    .restoreTrash(
+                        deviceIdentity: trashScope(for: device).identity,
+                        records: createdRecords,
+                        actionName: "Move to Trash"
+                    )
                 )
             }
 
@@ -4261,13 +4336,10 @@ public final class AppModel: ObservableObject {
         )
     }
 
-    func prepareTrashThumbnail(for record: TrashRecord) async {
-        guard selectedDevice?.serial == record.deviceSerial else { return }
-        await prepareThumbnail(for: trashFile(for: record), purpose: .browser)
-    }
-
     func quickLookTrash(record: TrashRecord) {
+        guard let record = visibleTrashRecord(matching: record.id) else { return }
         let file = trashFile(for: record)
+        activeTrashPreviewDeviceIdentity = visibleTrashDeviceScope?.identity
         let entry = PreviewWindowPresenter.SessionEntry(
             id: record.id.uuidString,
             title: record.name,
@@ -4287,8 +4359,7 @@ public final class AppModel: ObservableObject {
             selectedID: entry.id,
             loadURL: { [weak self] _ in
                 guard let self else { throw FileOperationError.noDevice }
-                try self.requireSelectedDevice(for: record)
-                return try await self.cachedPreviewURL(for: file, reportsActivity: false)
+                return try await self.cachedTrashPreviewURL(for: record)
             },
             releaseURL: { [weak self] url in
                 self?.releaseCachedPreviewURL(url)
@@ -4298,6 +4369,7 @@ public final class AppModel: ObservableObject {
     }
 
     func openTrash(record: TrashRecord, with applicationURL: URL? = nil) async {
+        guard let record = visibleTrashRecord(matching: record.id) else { return }
         let file = trashFile(for: record)
         if file.isDirectory {
             quickLookTrash(record: record)
@@ -4305,8 +4377,7 @@ public final class AppModel: ObservableObject {
         }
 
         await performCancellableRead("Opening \(record.name)...") { [self] in
-            try requireSelectedDevice(for: record)
-            let localURL = try await cachedPreviewURL(for: file, reportsActivity: false)
+            let localURL = try await cachedTrashPreviewURL(for: record)
             if let applicationURL {
                 NSWorkspace.shared.open(
                     [localURL],
@@ -4324,7 +4395,8 @@ public final class AppModel: ObservableObject {
     }
 
     func chooseApplicationAndOpenTrash(record: TrashRecord) {
-        guard trashFile(for: record).kind == .file else { return }
+        guard let record = visibleTrashRecord(matching: record.id),
+              trashFile(for: record).kind == .file else { return }
         let panel = NSOpenPanel()
         panel.title = "Choose an Application"
         panel.prompt = "Open"
@@ -4338,17 +4410,12 @@ public final class AppModel: ObservableObject {
     }
 
     func showTrashInfo(record: TrashRecord) {
-        guard selectedDevice?.serial == record.deviceSerial else {
-            alert = UserAlert(
-                title: "Connect the Right Phone",
-                message: "Select device \(record.deviceSerial) before viewing info for \(record.name)."
-            )
-            return
-        }
+        guard let record = visibleTrashRecord(matching: record.id) else { return }
         showFileInfo(file: trashFile(for: record))
     }
 
     func copyTrash(record: TrashRecord) async {
+        guard let record = visibleTrashRecord(matching: record.id) else { return }
         do {
             try requireSelectedDevice(for: record)
         } catch {
@@ -4367,10 +4434,10 @@ public final class AppModel: ObservableObject {
         }
 
         await perform("Renaming \(record.name)...") {
-            let device = try requireSelectedDevice(for: record)
-            guard trashRecords.contains(where: { $0.id == record.id }) else {
+            guard let record = visibleTrashRecord(matching: record.id) else {
                 throw FileOperationError.commandFailed("That item is no longer in Trash.")
             }
+            let device = try requireSelectedDevice(for: record)
 
             let trashDirectory = (record.trashPath as NSString).deletingLastPathComponent
             let safeName = trimmed.replacingOccurrences(of: "/", with: "_")
@@ -4402,7 +4469,7 @@ public final class AppModel: ObservableObject {
             var updatedRecords = trashRecords
             updatedRecords[index] = updatedRecord
             do {
-                try replaceTrashRecords(updatedRecords)
+                try replaceTrashRecords(updatedRecords, deviceIdentity: record.deviceSerial)
             } catch {
                 do {
                     _ = try await fileRepository.rename(
@@ -4425,10 +4492,16 @@ public final class AppModel: ObservableObject {
     private func requireSelectedDevice(for record: TrashRecord) throws -> AndroidDevice {
         guard let device = selectedDevice,
               device.state == .device,
-              device.serial == record.deviceSerial else {
-            throw FileOperationError.commandFailed("Connect and select device \(record.deviceSerial) to use \(record.name).")
+              trashScope(for: device).contains(record.deviceSerial),
+              visibleTrashRecord(matching: record.id) == record else {
+            throw FileOperationError.commandFailed("Connect and select the phone that owns this Trash item before using it.")
         }
         return device
+    }
+
+    private func visibleTrashRecord(matching id: TrashRecord.ID) -> TrashRecord? {
+        guard selectedDevice?.state == .device else { return nil }
+        return trashRecords.first { $0.id == id }
     }
 
     private func releaseOpenedTrashURLLater(_ url: URL) {
@@ -4440,13 +4513,16 @@ public final class AppModel: ObservableObject {
 
     public func restoreTrash(record: TrashRecord, replace: Bool = false) async {
         await perform("Restoring \(record.name)...") {
-            guard let device = selectedDevice else { throw FileOperationError.noDevice }
-            guard device.serial == record.deviceSerial else {
-                throw FileOperationError.commandFailed("This Trash item belongs to device \(record.deviceSerial). Select that device before restoring it.")
+            guard let record = visibleTrashRecord(matching: record.id) else {
+                throw FileOperationError.commandFailed("That Trash item is not available for the selected phone.")
             }
+            let device = try requireSelectedDevice(for: record)
             try await fileRepository.restore(device: device, record: record, replace: replace)
             do {
-                try replaceTrashRecords(trashRecords.filter { $0.id != record.id })
+                try replaceTrashRecords(
+                    trashRecords.filter { $0.id != record.id },
+                    deviceIdentity: record.deviceSerial
+                )
             } catch {
                 do {
                     _ = try await fileRepository.move(
@@ -4465,7 +4541,7 @@ public final class AppModel: ObservableObject {
             }
             recordFileHistory(
                 .trashItems(
-                    deviceSerial: device.physicalDeviceID,
+                    deviceIdentity: trashScope(for: device).identity,
                     items: [
                         RemoteClipboardItem(
                             path: record.originalPath,
@@ -4482,14 +4558,15 @@ public final class AppModel: ObservableObject {
     }
 
     public func permanentlyDeleteTrash(record: TrashRecord) async {
+        guard let record = visibleTrashRecord(matching: record.id) else { return }
         guard confirmPermanentTrashDeletion(record: record) else { return }
         await perform("Deleting \(record.name) permanently...") {
-            guard let device = selectedDevice else { throw FileOperationError.noDevice }
-            guard device.serial == record.deviceSerial else {
-                throw FileOperationError.commandFailed("This Trash item belongs to device \(record.deviceSerial). Select that device before deleting it.")
-            }
+            let device = try requireSelectedDevice(for: record)
             try await fileRepository.deletePermanently(device: device, remotePath: record.trashPath)
-            try replaceTrashRecords(trashRecords.filter { $0.id != record.id })
+            try replaceTrashRecords(
+                trashRecords.filter { $0.id != record.id },
+                deviceIdentity: record.deviceSerial
+            )
             statusMessage = "Deleted \(record.name) permanently."
         }
     }
@@ -4499,6 +4576,10 @@ public final class AppModel: ObservableObject {
         guard !recordsToDelete.isEmpty else {
             return TrashEmptyResult(deletedCount: 0, failures: [])
         }
+        guard let device = selectedDevice, device.state == .device else {
+            return TrashEmptyResult(deletedCount: 0, failures: [])
+        }
+        let deviceScope = trashScope(for: device)
 
         beginTrackedOperation()
         statusMessage = "Emptying Trash..."
@@ -4508,11 +4589,11 @@ public final class AppModel: ObservableObject {
         var failures: [TrashEmptyFailure] = []
 
         for record in recordsToDelete {
-            guard let device = devices.first(where: { $0.serial == record.deviceSerial && $0.state == .device }) else {
+            guard deviceScope.contains(record.deviceSerial) else {
                 failures.append(
                     TrashEmptyFailure(
                         record: record,
-                        message: "Reconnect device \(record.deviceSerial) before deleting this item."
+                        message: "This item belongs to another phone and was not touched."
                     )
                 )
                 continue
@@ -4520,7 +4601,10 @@ public final class AppModel: ObservableObject {
 
             do {
                 try await fileRepository.deletePermanently(device: device, remotePath: record.trashPath)
-                try replaceTrashRecords(trashRecords.filter { $0.id != record.id })
+                try replaceTrashRecords(
+                    trashRecords.filter { $0.id != record.id },
+                    deviceIdentity: record.deviceSerial
+                )
                 deletedCount += 1
             } catch {
                 failures.append(TrashEmptyFailure(record: record, message: error.localizedDescription))
@@ -4621,6 +4705,71 @@ public final class AppModel: ObservableObject {
         }
         scheduleCacheMaintenance()
         return url
+    }
+
+    private func cachedTrashPreviewURL(for record: TrashRecord) async throws -> URL {
+        let device = try requireSelectedDevice(for: record)
+        let file = trashFile(for: record)
+        let deviceIdentity = trashScope(for: device).identity
+        let cacheKey = "trash|\(deviceIdentity)|\(record.id.uuidString)|\(record.trashPath)|\(record.size ?? 0)"
+        let cacheName = await thumbnailService.sourceCacheFileName(
+            cacheKey: cacheKey,
+            originalName: record.name
+        )
+        let cacheURL = try await cacheStore.trashPreviewURL(
+            deviceIdentity: deviceIdentity,
+            cacheName: cacheName
+        )
+
+        if let cachedURL = try await cacheStore.readablePreviewURL(for: cacheURL, encrypt: true) {
+            guard isTrashPreviewRequestCurrent(record: record, device: device) else {
+                await cacheStore.releaseReadablePreview(cachedURL)
+                try? await cacheStore.clearTrashPreviewFiles(deviceIdentity: deviceIdentity)
+                throw CancellationError()
+            }
+            return cachedURL
+        }
+
+        let stagingDirectory = try await cacheStore.makePreviewStagingDirectory()
+        var downloadedURL: URL?
+        defer {
+            if let downloadedURL {
+                try? FileManager.default.removeItem(at: downloadedURL)
+            }
+            try? FileManager.default.removeItem(at: stagingDirectory)
+        }
+
+        downloadedURL = try await fileRepository.pull(
+            device: device,
+            remotePath: file.path,
+            to: stagingDirectory,
+            replace: true
+        )
+        try Task.checkCancellation()
+        guard isTrashPreviewRequestCurrent(record: record, device: device),
+              let downloadedURL else {
+            throw CancellationError()
+        }
+        try await cacheStore.storePreview(from: downloadedURL, at: cacheURL, encrypt: true)
+
+        guard let readableURL = try await cacheStore.readablePreviewURL(for: cacheURL, encrypt: true) else {
+            throw FileOperationError.commandFailed("The protected Trash preview could not be prepared.")
+        }
+        guard isTrashPreviewRequestCurrent(record: record, device: device) else {
+            await cacheStore.releaseReadablePreview(readableURL)
+            try? await cacheStore.clearTrashPreviewFiles(deviceIdentity: deviceIdentity)
+            throw CancellationError()
+        }
+        scheduleCacheMaintenance()
+        return readableURL
+    }
+
+    private func isTrashPreviewRequestCurrent(record: TrashRecord, device: AndroidDevice) -> Bool {
+        !Task.isCancelled
+            && selectedDevice?.id == device.id
+            && selectedDevice?.state == .device
+            && trashScope(for: device).contains(record.deviceSerial)
+            && visibleTrashRecord(matching: record.id) != nil
     }
 
     public func openPreviewLocally() {
@@ -8598,62 +8747,151 @@ public final class AppModel: ObservableObject {
         return directory.appending(path: "trash-records.json")
     }
 
-    private static func loadTrashRecords(from storage: TrashRecordsStorage) -> [TrashRecord] {
-        do {
-            let url: URL
-            switch storage {
-            case .applicationSupport:
-                url = try trashRecordsURL()
-            case .file(let fileURL):
-                url = fileURL
-            case .memoryOnly:
-                return []
-            }
-            guard FileManager.default.fileExists(atPath: url.path) else { return [] }
-            let data = try Data(contentsOf: url)
-            return try JSONDecoder().decode([TrashRecord].self, from: data)
-        } catch {
-            return []
-        }
+    private func trashScope(for device: AndroidDevice) -> TrashDeviceScope {
+        let provided = trashDeviceScopeProvider(device)
+        let identity = provided.identity.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stableIdentity = identity.isEmpty ? device.physicalDeviceID : identity
+        var legacyIdentifiers = provided.legacyIdentifiers
+        legacyIdentifiers.formUnion(device.availableSerials)
+        legacyIdentifiers.remove(stableIdentity)
+        return TrashDeviceScope(identity: stableIdentity, legacyIdentifiers: legacyIdentifiers)
     }
 
-    private func saveTrashRecords(_ records: [TrashRecord]) throws {
-        let url: URL
-        switch trashRecordsStorage {
-        case .applicationSupport:
-            url = try Self.trashRecordsURL()
-        case .file(let fileURL):
-            try FileManager.default.createDirectory(
-                at: fileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            url = fileURL
-        case .memoryOnly:
+    private func recordsForTrashScope(_ scope: TrashDeviceScope) -> [TrashRecord] {
+        trashRecordsByDeviceIdentity
+            .filter { scope.contains($0.key) }
+            .values
+            .flatMap { $0 }
+    }
+
+    private func refreshVisibleTrashRecords() {
+        guard let device = selectedDevice, device.state == .device else {
+            transitionAwayFromTrashDeviceIfNeeded(to: nil)
+            trashRecords = []
             return
         }
-        let data = try JSONEncoder().encode(records)
-        try data.write(to: url, options: .atomic)
+
+        let scope = trashScope(for: device)
+        transitionAwayFromTrashDeviceIfNeeded(to: scope)
+        let matchingIdentities = trashRecordsByDeviceIdentity.keys.filter(scope.contains)
+        var matchingRecords = recordsForTrashScope(scope)
+
+        let needsIdentityMigration = matchingIdentities.contains { $0 != scope.identity }
+            || matchingRecords.contains { $0.deviceSerial != scope.identity }
+        if needsIdentityMigration {
+            let migrated = matchingRecords.map { $0.assigned(toDeviceIdentity: scope.identity) }
+            var updated = trashRecordsByDeviceIdentity
+            for identity in matchingIdentities {
+                updated[identity] = nil
+            }
+            updated[scope.identity] = migrated
+            do {
+                let persisted = try persistTrashRecords(updated)
+                trashRecordsByDeviceIdentity = persisted
+                matchingRecords = persisted[scope.identity] ?? []
+                trashPersistenceIssue = nil
+            } catch {
+                trashPersistenceIssue = "Trash history is available for this phone, but its device identity could not be updated securely."
+            }
+        }
+
+        trashRecords = matchingRecords.sorted { lhs, rhs in
+            if lhs.deletedAt == rhs.deletedAt { return lhs.id.uuidString < rhs.id.uuidString }
+            return lhs.deletedAt > rhs.deletedAt
+        }
     }
 
-    private func replaceTrashRecords(_ records: [TrashRecord]) throws {
+    private func transitionAwayFromTrashDeviceIfNeeded(to newScope: TrashDeviceScope?) {
+        let previousScope = visibleTrashDeviceScope
+        visibleTrashDeviceScope = newScope
+        guard let previousScope, previousScope.identity != newScope?.identity else { return }
+
+        if activeTrashPreviewDeviceIdentity == previousScope.identity {
+            PreviewWindowPresenter.closeSession()
+            activeTrashPreviewDeviceIdentity = nil
+        }
+
+        let records = trashRecordsByDeviceIdentity
+            .filter { previousScope.contains($0.key) }
+            .values
+            .flatMap { $0 }
+        let thumbnailService = thumbnailService
+        let cacheStore = cacheStore
+        Task {
+            await thumbnailService.removeCachedThumbnails(
+                cacheKeys: Set(records.map(Self.legacyTrashThumbnailCacheKey))
+            )
+            let previewNames = await Self.legacyTrashPreviewCacheNames(
+                records: records,
+                thumbnailService: thumbnailService
+            )
+            await cacheStore.removeLegacyTrashPreviewFiles(cacheNames: previewNames)
+            try? await cacheStore.clearTrashPreviewFiles(deviceIdentity: previousScope.identity)
+        }
+    }
+
+    private func persistTrashRecords(
+        _ recordsByDeviceIdentity: [String: [TrashRecord]]
+    ) throws -> [String: [TrashRecord]] {
+        let archive = TrashRecordsArchive(recordsByDeviceIdentity: recordsByDeviceIdentity)
+        if let trashRecordStore {
+            try trashRecordStore.save(archive)
+        } else if !trashRecordsAreMemoryOnly {
+            throw TrashRecordStoreError.storageUnavailable
+        }
+        return archive.recordsByDeviceIdentity
+    }
+
+    private func replaceTrashRecords(
+        _ records: [TrashRecord],
+        deviceIdentity: String
+    ) throws {
+        let matchingScope = visibleTrashDeviceScope.flatMap { scope in
+            scope.contains(deviceIdentity) ? scope : nil
+        }
+        guard records.allSatisfy({ record in
+            matchingScope?.contains(record.deviceSerial) ?? (record.deviceSerial == deviceIdentity)
+        }) else {
+            throw FileOperationError.commandFailed("Trash information from different phones cannot be combined.")
+        }
+        let canonicalIdentity = matchingScope?.identity ?? deviceIdentity
+        let normalizedRecords = records.map { $0.assigned(toDeviceIdentity: canonicalIdentity) }
+        var updated = trashRecordsByDeviceIdentity
+        if let matchingScope {
+            for identity in updated.keys where matchingScope.contains(identity) {
+                updated[identity] = nil
+            }
+        } else {
+            updated[deviceIdentity] = nil
+        }
+        if !normalizedRecords.isEmpty {
+            updated[canonicalIdentity] = normalizedRecords.sorted { $0.deletedAt > $1.deletedAt }
+        }
+
         do {
-            try saveTrashRecords(records)
-            trashRecords = records
+            trashRecordsByDeviceIdentity = try persistTrashRecords(updated)
+            trashPersistenceIssue = nil
+            refreshVisibleTrashRecords()
         } catch {
+            trashPersistenceIssue = "Trash history could not be saved securely."
             throw FileOperationError.commandFailed(
-                "Trash information could not be saved on this Mac. \(error.localizedDescription)"
+                "Trash information could not be saved securely on this Mac. \(error.localizedDescription)"
             )
         }
     }
 
     private func trashAndRecord(device: AndroidDevice, file: AndroidFile) async throws -> TrashRecord {
+        let scope = trashScope(for: device)
+        let deviceIdentity = scope.identity
         let record = try await fileRepository.trash(device: device, file: file)
-        var updatedRecords = trashRecords
+            .assigned(toDeviceIdentity: deviceIdentity)
+        var updatedRecords = recordsForTrashScope(scope)
+            .map { $0.assigned(toDeviceIdentity: deviceIdentity) }
         updatedRecords.append(record)
         updatedRecords.sort { $0.deletedAt > $1.deletedAt }
 
         do {
-            try replaceTrashRecords(updatedRecords)
+            try replaceTrashRecords(updatedRecords, deviceIdentity: deviceIdentity)
             return record
         } catch {
             do {
@@ -8667,6 +8905,26 @@ public final class AppModel: ObservableObject {
                 "Trash information could not be saved, so \(file.name) was returned to its original location. \(error.localizedDescription)"
             )
         }
+    }
+
+    private static func legacyTrashThumbnailCacheKey(_ record: TrashRecord) -> String {
+        let size = record.size.map(String.init) ?? "unknown-size"
+        return "\(record.deviceSerial)|\(record.trashPath)|\(size)|unknown-date"
+    }
+
+    private static func legacyTrashPreviewCacheNames(
+        records: [TrashRecord],
+        thumbnailService: ThumbnailService
+    ) async -> Set<String> {
+        var names = Set<String>()
+        for record in records {
+            let cacheKey = "\(record.deviceSerial)|\(record.trashPath)|\(record.size ?? 0)|0.0"
+            names.insert(await thumbnailService.sourceCacheFileName(
+                cacheKey: cacheKey,
+                originalName: record.name
+            ))
+        }
+        return names
     }
 }
 
