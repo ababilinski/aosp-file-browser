@@ -6,6 +6,7 @@ struct USBTransferView: View {
     @Binding var layout: BrowserLayout
     let isADBConnected: Bool
     let pasteIntoCurrentFolder: () -> Void
+    let onBlankSpaceDeselection: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,13 +38,15 @@ struct USBTransferView: View {
                             USBTransferColumnBrowser(
                                 manager: manager,
                                 settings: settings,
-                                pasteIntoCurrentFolder: pasteIntoCurrentFolder
+                                pasteIntoCurrentFolder: pasteIntoCurrentFolder,
+                                onBlankSpaceDeselection: onBlankSpaceDeselection
                             )
                         case .icons:
                             USBTransferIconGrid(
                                 manager: manager,
                                 settings: settings,
-                                pasteIntoCurrentFolder: pasteIntoCurrentFolder
+                                pasteIntoCurrentFolder: pasteIntoCurrentFolder,
+                                onBlankSpaceDeselection: onBlankSpaceDeselection
                             )
                         }
 
@@ -566,6 +569,7 @@ private struct USBTransferColumnBrowser: View {
     @ObservedObject var manager: USBTransferManager
     @ObservedObject var settings: AppSettings
     let pasteIntoCurrentFolder: () -> Void
+    let onBlankSpaceDeselection: () -> Void
     @State private var dropTargeted = false
     @State private var columnWidths: [USBTransferSort: CGFloat] = [:]
     @State private var resizeStartWidths: [USBTransferSort: CGFloat]?
@@ -610,6 +614,7 @@ private struct USBTransferColumnBrowser: View {
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 manager.clearItemSelection()
+                                onBlankSpaceDeselection()
                             }
                             .contextMenu {
                                 USBTransferBackgroundContextMenu(
@@ -622,7 +627,8 @@ private struct USBTransferColumnBrowser: View {
                                 ZStack(alignment: .topLeading) {
                                     USBTransferBackgroundSurface(
                                         manager: manager,
-                                        pasteIntoCurrentFolder: pasteIntoCurrentFolder
+                                        pasteIntoCurrentFolder: pasteIntoCurrentFolder,
+                                        onBlankSpaceDeselection: onBlankSpaceDeselection
                                     )
                                     .frame(width: layout.totalWidth)
                                     .frame(minHeight: max(proxy.size.height - 33, 0))
@@ -717,6 +723,7 @@ private struct USBTransferIconGrid: View {
     @ObservedObject var manager: USBTransferManager
     @ObservedObject var settings: AppSettings
     let pasteIntoCurrentFolder: () -> Void
+    let onBlankSpaceDeselection: () -> Void
     @State private var dropTargeted = false
     @State private var scrollPositionID: USBTransferItem.ID?
     @State private var scrollPositionsByPath: [String: USBTransferItem.ID] = [:]
@@ -749,6 +756,7 @@ private struct USBTransferIconGrid: View {
                         .contentShape(Rectangle())
                         .onTapGesture {
                             manager.clearItemSelection()
+                            onBlankSpaceDeselection()
                         }
                         .contextMenu {
                             USBTransferBackgroundContextMenu(
@@ -761,7 +769,8 @@ private struct USBTransferIconGrid: View {
                             ZStack(alignment: .top) {
                                 USBTransferBackgroundSurface(
                                     manager: manager,
-                                    pasteIntoCurrentFolder: pasteIntoCurrentFolder
+                                    pasteIntoCurrentFolder: pasteIntoCurrentFolder,
+                                    onBlankSpaceDeselection: onBlankSpaceDeselection
                                 )
                                 .frame(maxWidth: .infinity)
                                 .frame(minHeight: proxy.size.height)
@@ -965,12 +974,14 @@ private struct USBTransferIconGridItem: View {
 private struct USBTransferBackgroundSurface: View {
     @ObservedObject var manager: USBTransferManager
     let pasteIntoCurrentFolder: () -> Void
+    let onBlankSpaceDeselection: () -> Void
 
     var body: some View {
         Color.clear
             .contentShape(Rectangle())
             .onTapGesture {
                 manager.clearItemSelection()
+                onBlankSpaceDeselection()
             }
             .contextMenu {
                 USBTransferBackgroundContextMenu(

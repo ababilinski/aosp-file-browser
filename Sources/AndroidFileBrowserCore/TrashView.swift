@@ -3,6 +3,7 @@ import SwiftUI
 
 struct TrashView: View {
     @ObservedObject var model: AppModel
+    let onBlankSpaceDeselection: () -> Void
     @State private var selectedRecordIDs = Set<TrashRecord.ID>()
     @State private var pendingRenameRecord: TrashRecord?
     @State private var isConfirmingEmptyTrash = false
@@ -35,6 +36,11 @@ struct TrashView: View {
                     description: Text("Deleted items appear here until you restore or permanently delete them.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    selectedRecordIDs.removeAll()
+                    onBlankSpaceDeselection()
+                }
             } else {
                 trashTable
             }
@@ -127,6 +133,17 @@ struct TrashView: View {
             guard records.count == 1, let record = records.first else { return }
             Task { await model.openTrash(record: record) }
         }
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                // Native Table owns its selection and clears it when the user clicks
+                // below the rows. Check on the next run loop after that update lands.
+                DispatchQueue.main.async {
+                    if selectedRecordIDs.isEmpty {
+                        onBlankSpaceDeselection()
+                    }
+                }
+            }
+        )
     }
 
     private var emptyTrashConfirmationMessage: String {

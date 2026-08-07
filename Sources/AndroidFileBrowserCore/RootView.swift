@@ -20,15 +20,19 @@ public struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
         } detail: {
             VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    MainSurface(model: model)
+                GeometryReader { proxy in
+                    HStack(spacing: 0) {
+                        MainSurface(model: model) {
+                            blankSpaceDeselected(availableWidth: proxy.size.width)
+                        }
                         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
                         .layoutPriority(1)
 
-                    if model.shouldShowDetailInspector {
-                        Divider()
-                        DetailInspector(model: model)
-                            .frame(minWidth: 320, idealWidth: 380, maxWidth: 480, maxHeight: .infinity)
+                        if model.shouldShowDetailInspector {
+                            Divider()
+                            DetailInspector(model: model)
+                                .frame(minWidth: InspectorLayoutPolicy.inspectorMinimumWidth, idealWidth: 380, maxWidth: 480, maxHeight: .infinity)
+                        }
                     }
                 }
 
@@ -218,6 +222,22 @@ public struct RootView: View {
                 }
             )
             .frame(width: 0, height: 0)
+        }
+    }
+
+    private func blankSpaceDeselected(availableWidth: CGFloat) {
+        guard model.showInspector else { return }
+        let minimumMainContentWidth = InspectorLayoutPolicy.minimumMainContentWidth(
+            for: model.sidebarSelection,
+            browserLayout: model.browserLayout,
+            visibleFileColumns: model.visibleFileColumns,
+            visibleAppColumns: model.visibleAppColumns
+        )
+        if InspectorLayoutPolicy.shouldAutoHideInspector(
+            availableWidth: availableWidth,
+            minimumMainContentWidth: minimumMainContentWidth
+        ) {
+            model.showInspector = false
         }
     }
 
@@ -1185,6 +1205,7 @@ private struct StorageRow: View {
 
 private struct StorageBreakdownView: View {
     @ObservedObject var model: AppModel
+    let onBlankSpaceDeselection: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1258,58 +1279,84 @@ private struct StorageBreakdownView: View {
     }
 
     private func storageContent(_ breakdown: StorageBreakdown) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "internaldrive")
-                        .font(.largeTitle)
-                        .foregroundStyle(.blue)
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(breakdown.summary.title)
-                            .font(.largeTitle.weight(.semibold))
-                        Text(breakdown.summary.subtitle)
-                            .font(.title3)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Text("\(Int(breakdown.summary.fractionUsed * 100))%")
-                        .font(.title2.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
+        GeometryReader { proxy in
+            ScrollView {
+                ZStack(alignment: .topLeading) {
+                    StorageBreakdownBackgroundSurface(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: proxy.size.height)
 
-                StorageSegmentedUsageBar(summary: breakdown.summary, breakdown: breakdown, height: 16)
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 12)], spacing: 12) {
-                    ForEach(breakdown.visibleCategories) { category in
-                        StorageCategoryRow(
-                            category: category,
-                            totalBytes: breakdown.summary.totalBytes,
-                            isSelected: model.selectedStorageCategoryID == category.id,
-                            isLoading: model.isLoadingStorageCategory(category, in: breakdown.summary)
-                        ) {
-                            Task { await model.selectStorageCategory(category, in: breakdown.summary) }
+                    VStack(alignment: .leading, spacing: 18) {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: "internaldrive")
+                                .font(.largeTitle)
+                                .foregroundStyle(.blue)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(breakdown.summary.title)
+                                    .font(.largeTitle.weight(.semibold))
+                                Text(breakdown.summary.subtitle)
+                                    .font(.title3)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text("\(Int(breakdown.summary.fractionUsed * 100))%")
+                                .font(.title2.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(.secondary)
                         }
+
+                        StorageSegmentedUsageBar(summary: breakdown.summary, breakdown: breakdown, height: 16)
+
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 12)], spacing: 12) {
+                            ForEach(breakdown.visibleCategories) { category in
+                                StorageCategoryRow(
+                                    category: category,
+                                    totalBytes: breakdown.summary.totalBytes,
+                                    isSelected: model.selectedStorageCategoryID == category.id,
+                                    isLoading: model.isLoadingStorageCategory(category, in: breakdown.summary)
+                                ) {
+                                    Task { await model.selectStorageCategory(category, in: breakdown.summary) }
+                                }
+                            }
+                        }
+
+                        if let category = model.selectedStorageCategory {
+                            StorageCategoryFilesPanel(
+                                model: model,
+                                category: category,
+                                fileList: model.selectedStorageCategoryFileList,
+                                isLoading: model.isLoadingSelectedStorageCategory,
+                                onBlankSpaceDeselection: onBlankSpaceDeselection
+                            )
+                        }
+
+                        Text("Estimated from ADB-visible storage. Private app data and Android system areas are inferred from the volume total when Android does not expose exact folders.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
+                    .padding(24)
+                    .frame(maxWidth: 980, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-
-                if let category = model.selectedStorageCategory {
-                    StorageCategoryFilesPanel(
-                        model: model,
-                        category: category,
-                        fileList: model.selectedStorageCategoryFileList,
-                        isLoading: model.isLoadingSelectedStorageCategory
-                    )
-                }
-
-                Text("Estimated from ADB-visible storage. Private app data and Android system areas are inferred from the volume total when Android does not expose exact folders.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: proxy.size.height, alignment: .top)
             }
-            .padding(24)
-            .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+private struct StorageBreakdownBackgroundSurface: View {
+    @ObservedObject var model: AppModel
+    let onBlankSpaceDeselection: () -> Void
+
+    var body: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onTapGesture {
+                model.clearStorageSelection()
+                onBlankSpaceDeselection()
+            }
+            .accessibilityIdentifier("storage-breakdown-background")
     }
 }
 
@@ -1322,13 +1369,13 @@ private struct StorageAnalysisPlaceholder: View {
         CompatibleContentUnavailableView {
             Label(isLoading ? "Analyzing \(title)" : "Storage Breakdown Not Loaded", systemImage: "internaldrive")
         } description: {
-            Text(isLoading ? "Reading storage categories from the Android device." : "Click Refresh to analyze this storage volume.")
+            Text(isLoading ? "Reading storage categories from the Android device." : "Storage analysis starts automatically when the phone is idle. You can retry it now.")
         } actions: {
             if isLoading {
                 ProgressView()
                     .controlSize(.large)
             } else {
-                Button("Refresh", action: retry)
+                Button("Try Again", action: retry)
                     .liquidGlassProminentButton()
             }
         }
@@ -1392,6 +1439,7 @@ private struct StorageCategoryFilesPanel: View {
     let category: StorageBreakdownCategory
     let fileList: StorageCategoryFileList?
     let isLoading: Bool
+    let onBlankSpaceDeselection: () -> Void
     @State private var sortColumn: StorageCategoryFileColumn = .size
     @State private var sortAscending = false
     @State private var columnWidths: [StorageCategoryFileColumn: CGFloat] = [:]
@@ -1402,13 +1450,15 @@ private struct StorageCategoryFilesPanel: View {
         model: AppModel,
         category: StorageBreakdownCategory,
         fileList: StorageCategoryFileList?,
-        isLoading: Bool
+        isLoading: Bool,
+        onBlankSpaceDeselection: @escaping () -> Void
     ) {
         self.model = model
         self.settings = model.settings
         self.category = category
         self.fileList = fileList
         self.isLoading = isLoading
+        self.onBlankSpaceDeselection = onBlankSpaceDeselection
     }
 
     private var sortedFiles: [AndroidFile] {
@@ -1436,7 +1486,7 @@ private struct StorageCategoryFilesPanel: View {
 
             if category.kind == .apps {
                 ZStack {
-                    StorageCategoryAppsPanel(model: model)
+                    StorageCategoryAppsPanel(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
                         .opacity(model.isLoadingApps && model.packages.isEmpty ? 0 : 1)
 
                     if model.isLoadingApps {
@@ -1496,17 +1546,25 @@ private struct StorageCategoryFilesPanel: View {
                         }
                         Divider()
                         ScrollView(.vertical) {
-                            LazyVStack(spacing: 0) {
-                                ForEach(sortedFiles) { file in
-                                    StorageCategoryFileRow(
-                                        model: model,
-                                        file: file,
-                                        visibleFiles: sortedFiles,
-                                        layout: layout
-                                    )
-                                    Divider()
+                            ZStack(alignment: .topLeading) {
+                                StorageBreakdownBackgroundSurface(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
+                                    .frame(maxWidth: .infinity)
+                                    .frame(minHeight: max(proxy.size.height - 34, 0))
+
+                                LazyVStack(spacing: 0) {
+                                    ForEach(sortedFiles) { file in
+                                        StorageCategoryFileRow(
+                                            model: model,
+                                            file: file,
+                                            visibleFiles: sortedFiles,
+                                            layout: layout
+                                        )
+                                        Divider()
+                                    }
                                 }
                             }
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: max(proxy.size.height - 34, 0), alignment: .top)
                         }
                     }
                     .frame(width: proxy.size.width, alignment: .leading)
@@ -1806,6 +1864,7 @@ private struct StorageCategoryFileRow: View {
 
 private struct StorageCategoryAppsPanel: View {
     @ObservedObject var model: AppModel
+    let onBlankSpaceDeselection: () -> Void
 
     var body: some View {
         VStack(spacing: 10) {
@@ -1835,8 +1894,12 @@ private struct StorageCategoryAppsPanel: View {
                 .help("Refresh apps")
             }
 
-            AppPackageList(model: model, showsStorageDisclosure: true)
-                .frame(minHeight: 260)
+            AppPackageList(
+                model: model,
+                showsStorageDisclosure: true,
+                onBlankSpaceDeselection: onBlankSpaceDeselection
+            )
+            .frame(minHeight: 260)
         }
         .task {
             model.sortStorageAppsByLargest()
@@ -2077,11 +2140,13 @@ private struct MainSurface: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var settings: AppSettings
     @ObservedObject private var usbTransferManager: USBTransferManager
+    let onBlankSpaceDeselection: () -> Void
 
-    init(model: AppModel) {
+    init(model: AppModel, onBlankSpaceDeselection: @escaping () -> Void) {
         self.model = model
         self.settings = model.settings
         self.usbTransferManager = model.usbTransferManager
+        self.onBlankSpaceDeselection = onBlankSpaceDeselection
     }
 
     var body: some View {
@@ -2091,11 +2156,11 @@ private struct MainSurface: View {
             } else {
                 switch model.sidebarSelection {
                 case .apps:
-                    AppManagerView(model: model)
+                    AppManagerView(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
                 case .trash:
-                    TrashView(model: model)
+                    TrashView(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
                 case .storage:
-                    StorageBreakdownView(model: model)
+                    StorageBreakdownView(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
                 case .usbTransfer, .usbTransferLocation:
                     USBTransferView(
                         manager: model.usbTransferManager,
@@ -2104,10 +2169,11 @@ private struct MainSurface: View {
                         isADBConnected: model.hasReadyADBDevice && !usbTransferManager.isADBReleasedForMTPSession,
                         pasteIntoCurrentFolder: {
                             Task { await model.pasteFromPasteboardOrClipboard() }
-                        }
+                        },
+                        onBlankSpaceDeselection: onBlankSpaceDeselection
                     )
                 case .location, nil:
-                    FileBrowserView(model: model)
+                    FileBrowserView(model: model, onBlankSpaceDeselection: onBlankSpaceDeselection)
                 }
             }
         }

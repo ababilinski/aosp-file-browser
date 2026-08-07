@@ -310,6 +310,7 @@ public final class AppModel: ObservableObject {
     private var lastSelectionFileOrder: [AndroidFile] = []
     private var storageCategoryPrefetchTask: Task<Void, Never>?
     private var storageCategoryPrefetchSignature: String?
+    private var storageCategoryPrefetchGeneration = 0
     private var transferQueueJobsCancellable: AnyCancellable?
     private var usbTransferManagerCancellable: AnyCancellable?
     private var delayedTransferPresentationTasks: [UUID: Task<Void, Never>] = [:]
@@ -479,9 +480,15 @@ public final class AppModel: ObservableObject {
         }
         self.transferQueueJobsCancellable = transferQueue.$jobs.sink { [weak self] _ in
             self?.objectWillChange.send()
+            DispatchQueue.main.async {
+                self?.storagePrefetchActivityDidChange()
+            }
         }
         self.usbTransferManagerCancellable = usbTransferManager.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
+            DispatchQueue.main.async {
+                self?.storagePrefetchActivityDidChange()
+            }
         }
 
         let legacyTrashRecords = existingTrashRecords
@@ -567,6 +574,7 @@ public final class AppModel: ObservableObject {
     public func cancelTerminationRequest() {
         isPreparingForTermination = false
         startBackgroundRefreshLoop()
+        storagePrefetchActivityDidChange()
     }
 
     public func startBackgroundRefreshLoop() {
@@ -1944,14 +1952,19 @@ public final class AppModel: ObservableObject {
         guard !isPreparingForTermination,
               !isPollingDeviceConnections,
               updatingWirelessADBDeviceIDs.isEmpty,
-              wirelessADBSetupTasks.isEmpty else { return }
+              wirelessADBSetupTasks.isEmpty,
+              !isPrefetchingStorageCategories else { return }
         if isUSBTransferSelected, usbTransferManager.isADBReleasedForMTPSession {
             statusMessage = usbTransferManager.statusMessage
             return
         }
 
         isPollingDeviceConnections = true
-        defer { isPollingDeviceConnections = false }
+        storagePrefetchActivityDidChange()
+        defer {
+            isPollingDeviceConnections = false
+            storagePrefetchActivityDidChange()
+        }
         let wasBusy = isBusy
 
         do {
@@ -2389,7 +2402,7 @@ public final class AppModel: ObservableObject {
 
         sidebarSelection = .storage(summary.id)
         if forceRefresh {
-            cancelStorageCategoryPrefetch()
+            cancelStorageCategoryPrefetch(clearSignature: false)
         } else if prefetchingStorageBreakdownIDs.contains(summary.id) {
             statusMessage = "Storage breakdown is loading in the background."
             return
@@ -2400,9 +2413,14 @@ public final class AppModel: ObservableObject {
             return
         }
 
+        cancelStorageCategoryPrefetch(clearSignature: false)
         loadingStorageBreakdownID = summary.id
+        storagePrefetchActivityDidChange()
         statusMessage = "Analyzing \(summary.title)..."
-        defer { loadingStorageBreakdownID = nil }
+        defer {
+            loadingStorageBreakdownID = nil
+            rescheduleStorageBreakdownPrefetchIfPossible()
+        }
 
         do {
             let breakdown = try await fileRepository.storageBreakdown(device: device, summary: summary)
@@ -2419,6 +2437,9 @@ public final class AppModel: ObservableObject {
 
     public func selectStorageCategory(_ category: StorageBreakdownCategory, in summary: StorageSummary) async {
         selectedAppStorageLocation = nil
+        selectedFileIDs.removeAll()
+        selectedPackageIDs.removeAll()
+        lastSelectedPackageID = nil
         guard category.kind.canBrowseFiles else {
             showStorageCategoryInfo(category)
             return
@@ -2440,7 +2461,10 @@ public final class AppModel: ObservableObject {
             sortStorageAppsByLargest()
             if packages.isEmpty {
                 loadingStorageCategoryID = listID
-                defer { loadingStorageCategoryID = nil }
+                defer {
+                    loadingStorageCategoryID = nil
+                    rescheduleStorageBreakdownPrefetchIfPossible()
+                }
                 await loadPackages()
             } else {
                 statusMessage = "Apps storage details ready."
@@ -2454,8 +2478,13 @@ public final class AppModel: ObservableObject {
         }
 
         loadingStorageCategoryID = listID
+        cancelStorageCategoryPrefetch(clearSignature: false)
+        storagePrefetchActivityDidChange()
         statusMessage = "Loading largest \(category.displayTitle.lowercased()) files..."
-        defer { loadingStorageCategoryID = nil }
+        defer {
+            loadingStorageCategoryID = nil
+            rescheduleStorageBreakdownPrefetchIfPossible()
+        }
 
         do {
             let files = try await fileRepository.storageCategoryFiles(device: device, summary: summary, category: category)
@@ -2507,6 +2536,7 @@ public final class AppModel: ObservableObject {
         let mutationRevision = browserMutationRevision(for: path)
         let repository = fileRepository
         loadingTreePaths.insert(path)
+        storagePrefetchActivityDidChange()
         treeLoadRequestIDs[path] = requestID
 
         let task = Task { @MainActor [weak self, repository, device, path] in
@@ -2519,6 +2549,7 @@ public final class AppModel: ObservableObject {
                     if self.loadingTreePaths.isEmpty {
                         self.scheduleFolderSizeCalculations(for: self.visibleFilesIncludingExpandedChildren)
                     }
+                    self.storagePrefetchActivityDidChange()
                 }
             }
 
@@ -2557,6 +2588,7 @@ public final class AppModel: ObservableObject {
         treeLoadTasks[path] = nil
         treeLoadRequestIDs[path] = nil
         loadingTreePaths.remove(path)
+        storagePrefetchActivityDidChange()
     }
 
     private func cancelAllTreeLoads() {
@@ -2566,6 +2598,7 @@ public final class AppModel: ObservableObject {
         treeLoadTasks.removeAll()
         treeLoadRequestIDs.removeAll()
         loadingTreePaths.removeAll()
+        storagePrefetchActivityDidChange()
     }
 
     private func cancelADBFolderLoading() {
@@ -2655,6 +2688,7 @@ public final class AppModel: ObservableObject {
             defer {
                 if self.folderSizeWorkerGeneration == generation {
                     self.folderSizeWorkerTask = nil
+                    self.storagePrefetchActivityDidChange()
                 }
             }
 
@@ -2680,6 +2714,7 @@ public final class AppModel: ObservableObject {
                 }
             }
         }
+        storagePrefetchActivityDidChange()
     }
 
     private func cancelFolderSizeWorker(clearQueue: Bool) {
@@ -2691,6 +2726,7 @@ public final class AppModel: ObservableObject {
             folderSizeQueue.removeAll()
             queuedFolderSizePaths.removeAll()
         }
+        storagePrefetchActivityDidChange()
     }
 
     public func resetSearchFilters() {
@@ -2739,6 +2775,11 @@ public final class AppModel: ObservableObject {
     ) async {
         guard let device = selectedDevice, device.state == .device else { return }
         isSearchingFullDevice = true
+        storagePrefetchActivityDidChange()
+        defer {
+            isSearchingFullDevice = false
+            storagePrefetchActivityDidChange()
+        }
         statusMessage = "Searching phone storage..."
         do {
             let results = try await fileRepository.searchFiles(
@@ -2755,12 +2796,13 @@ public final class AppModel: ObservableObject {
             searchResults = results
             selectedFileIDs = selectedFileIDs.intersection(Set(results.map(\.id)))
             statusMessage = results.isEmpty ? "No full-system search results." : "\(results.count) full-system search result\(results.count == 1 ? "" : "s")."
+        } catch is CancellationError {
+            return
         } catch {
             searchResults = []
             statusMessage = "Search failed: \(error.localizedDescription)"
             alert = UserAlert(error: error)
         }
-        isSearchingFullDevice = false
     }
 
     public func navigateUp() {
@@ -3153,6 +3195,23 @@ public final class AppModel: ObservableObject {
         lastSelectedFileID = nil
         keyboardSelectionAnchorFileID = nil
         lastSelectionFileOrder.removeAll()
+    }
+
+    public func clearFileBrowserSelection() {
+        clearFileSelection()
+        selectedPackageIDs.removeAll()
+        lastSelectedPackageID = nil
+    }
+
+    public func clearAppSelection() {
+        clearFileSelection()
+        selectedPackageIDs.removeAll()
+        lastSelectedPackageID = nil
+    }
+
+    public func clearStorageSelection() {
+        clearAppSelection()
+        selectedStorageCategoryID = nil
     }
 
     public func prepareFileSelectionForContextMenu(_ file: AndroidFile) {
@@ -6366,8 +6425,12 @@ public final class AppModel: ObservableObject {
               !hasPhoneControlTransitionInProgress else { return }
 
         isCapturingScreenshot = true
+        storagePrefetchActivityDidChange()
         statusMessage = "Capturing screenshot..."
-        defer { isCapturingScreenshot = false }
+        defer {
+            isCapturingScreenshot = false
+            storagePrefetchActivityDidChange()
+        }
 
         do {
             let captureDevices = captureDevices(for: .screenshot, explicitSerial: deviceSerial)
@@ -6471,6 +6534,7 @@ public final class AppModel: ObservableObject {
               !hasPhoneControlTransitionInProgress else { return }
 
         isStartingScreenRecording = true
+        storagePrefetchActivityDidChange()
         screenRecordingRequestDeviceSerial = deviceSerial
         statusMessage = "Preparing screen recording..."
         var pendingMacMicrophoneHandle: MacMicrophoneCaptureHandle?
@@ -6478,6 +6542,7 @@ public final class AppModel: ObservableObject {
         defer {
             isStartingScreenRecording = false
             screenRecordingRequestDeviceSerial = nil
+            storagePrefetchActivityDidChange()
             if !didCommitRecordingSession {
                 pendingMacMicrophoneHandle?.cleanup()
             }
@@ -6752,6 +6817,7 @@ public final class AppModel: ObservableObject {
               !isStartingScreenRecording,
               !isFinishingScreenRecording else { return }
         isLaunchingScrcpy = true
+        storagePrefetchActivityDidChange()
         var deviceOptions = settings.phoneControlOptions(for: device.serial)
         if let capturesAudioOverride {
             deviceOptions.capturesAudio = capturesAudioOverride
@@ -6759,6 +6825,7 @@ public final class AppModel: ObservableObject {
         statusMessage = "Opening Phone Control..."
         defer {
             isLaunchingScrcpy = false
+            storagePrefetchActivityDidChange()
         }
 
         do {
@@ -7195,7 +7262,11 @@ public final class AppModel: ObservableObject {
             return
         }
         phoneControlShutdownsInProgress.insert(session.deviceSerial)
-        defer { phoneControlShutdownsInProgress.remove(session.deviceSerial) }
+        cancelStorageCategoryPrefetch(clearSignature: false)
+        defer {
+            phoneControlShutdownsInProgress.remove(session.deviceSerial)
+            storagePrefetchActivityDidChange()
+        }
 
         let stopWasRequested = phoneControlStopRequests.remove(session.deviceSerial) != nil
         let restorePlan = phoneControlRestorePlans.removeValue(forKey: session.deviceSerial)
@@ -7843,7 +7914,36 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    private func scheduleStorageCategoryPrefetch(device: AndroidDevice, summaries: [StorageSummary]) {
+    private var storagePrefetchActivity: StoragePrefetchActivity {
+        StoragePrefetchActivity(
+            hasReadyDevice: selectedDevice?.state == .device,
+            usesADBConnection: connectionMode == .adb && !usbTransferManager.isADBReleasedForMTPSession,
+            hasForegroundOperation: isBusy
+                || isRunningFileHistoryOperation
+                || loadingStorageBreakdownID != nil
+                || loadingStorageCategoryID != nil,
+            hasActiveTransfer: !transferQueue.unfinishedJobs.isEmpty,
+            hasActiveUSBOperation: usbTransferManager.hasTerminationBlockingActivity
+                || usbTransferManager.isCataloging
+                || usbTransferManager.isResolvingQuickLocations
+                || usbTransferManager.isReleasingADBForMTP
+                || usbTransferManager.isRecoveringMTPConnection,
+            hasActiveSearch: isSearchingFullDevice,
+            hasActiveNavigation: isLoadingCurrentFolder || !loadingTreePaths.isEmpty,
+            hasActiveFolderAnalysis: folderSizeWorkerTask != nil || !loadingFolderSizePaths.isEmpty,
+            hasActiveCapture: isCapturingScreenshot
+                || isLaunchingScrcpy
+                || isStartingScreenRecording
+                || isFinishingScreenRecording
+                || isApplyingCapturePresentation
+                || screenRecordingSession != nil
+                || !phoneControlSessions.isEmpty,
+            isPollingConnections: isPollingDeviceConnections,
+            isPreparingForTermination: isPreparingForTermination
+        )
+    }
+
+    private func scheduleStorageBreakdownPrefetch(device: AndroidDevice, summaries: [StorageSummary]) {
         guard device.state == .device, !summaries.isEmpty else {
             cancelStorageCategoryPrefetch()
             return
@@ -7855,14 +7955,27 @@ public final class AppModel: ObservableObject {
             return
         }
 
+        if summaries.allSatisfy({ storageBreakdowns[$0.id] != nil }) {
+            cancelStorageCategoryPrefetch(clearSignature: false)
+            storageCategoryPrefetchSignature = signature
+            return
+        }
+
         cancelStorageCategoryPrefetch(clearSignature: false)
         storageCategoryPrefetchSignature = signature
+        let generation = storageCategoryPrefetchGeneration
         storageCategoryPrefetchTask = Task(priority: .utility) { [weak self, device, summaries, signature] in
-            await self?.prefetchStorageCategories(device: device, summaries: summaries, signature: signature)
+            await self?.prefetchStorageBreakdowns(
+                device: device,
+                summaries: summaries,
+                signature: signature,
+                generation: generation
+            )
         }
     }
 
     private func cancelStorageCategoryPrefetch(clearSignature: Bool = true) {
+        storageCategoryPrefetchGeneration &+= 1
         storageCategoryPrefetchTask?.cancel()
         storageCategoryPrefetchTask = nil
         if clearSignature {
@@ -7873,6 +7986,21 @@ public final class AppModel: ObservableObject {
         isPrefetchingStorageCategories = false
     }
 
+    private func rescheduleStorageBreakdownPrefetchIfPossible() {
+        guard let device = selectedDevice, device.state == .device else { return }
+        scheduleStorageBreakdownPrefetch(device: device, summaries: storageSummaries)
+    }
+
+    private func storagePrefetchActivityDidChange() {
+        guard storagePrefetchActivity.isIdle else {
+            if storageCategoryPrefetchTask != nil {
+                cancelStorageCategoryPrefetch(clearSignature: false)
+            }
+            return
+        }
+        rescheduleStorageBreakdownPrefetchIfPossible()
+    }
+
     private func storagePrefetchSignature(device: AndroidDevice, summaries: [StorageSummary]) -> String {
         let summarySignature = summaries
             .map { "\($0.id):\($0.path):\($0.usedBytes):\($0.totalBytes)" }
@@ -7880,14 +8008,28 @@ public final class AppModel: ObservableObject {
         return "\(device.id)|\(summarySignature)"
     }
 
-    private func prefetchStorageCategories(
+    private func prefetchStorageBreakdowns(
         device: AndroidDevice,
         summaries: [StorageSummary],
-        signature: String
+        signature: String,
+        generation: Int
     ) async {
+        guard await waitForStoragePrefetchIdle(
+            device: device,
+            signature: signature,
+            generation: generation
+        ) else {
+            if storageCategoryPrefetchSignature == signature,
+               storageCategoryPrefetchGeneration == generation {
+                storageCategoryPrefetchTask = nil
+            }
+            return
+        }
+
         isPrefetchingStorageCategories = true
         defer {
-            if storageCategoryPrefetchSignature == signature {
+            if storageCategoryPrefetchSignature == signature,
+               storageCategoryPrefetchGeneration == generation {
                 storageCategoryPrefetchTask = nil
                 prefetchingStorageBreakdownIDs.removeAll()
                 prefetchingStorageCategoryIDs.removeAll()
@@ -7896,76 +8038,89 @@ public final class AppModel: ObservableObject {
         }
 
         for summary in summaries {
-            guard shouldContinueStoragePrefetch(device: device) else { return }
+            guard shouldContinueStoragePrefetch(
+                device: device,
+                signature: signature,
+                generation: generation
+            ) else { return }
 
-            let breakdown: StorageBreakdown
-            if let cached = storageBreakdowns[summary.id] {
-                breakdown = cached
-            } else {
+            if storageBreakdowns[summary.id] == nil {
                 prefetchingStorageBreakdownIDs.insert(summary.id)
                 do {
-                    breakdown = try await fileRepository.storageBreakdown(device: device, summary: summary)
-                    guard shouldContinueStoragePrefetch(device: device) else { return }
+                    let breakdown = try await fileRepository.storageBreakdown(device: device, summary: summary)
+                    guard shouldContinueStoragePrefetch(
+                        device: device,
+                        signature: signature,
+                        generation: generation
+                    ) else { return }
                     storageBreakdowns[summary.id] = breakdown
+                } catch is CancellationError {
+                    return
                 } catch {
                     prefetchingStorageBreakdownIDs.remove(summary.id)
                     continue
                 }
                 prefetchingStorageBreakdownIDs.remove(summary.id)
             }
-
-            await prefetchStorageCategoryFileLists(device: device, breakdown: breakdown)
-        }
-    }
-
-    private func prefetchStorageCategoryFileLists(device: AndroidDevice, breakdown: StorageBreakdown) async {
-        for category in breakdown.visibleCategories where category.kind.canBrowseFiles {
-            guard shouldContinueStoragePrefetch(device: device) else { return }
-            let listID = storageCategoryFileListID(summaryID: breakdown.summary.id, categoryID: category.id)
-            guard storageCategoryFileLists[listID] == nil else { continue }
-
-            if category.kind == .apps {
-                await prefetchAppsIfNeeded(listID: listID)
-                continue
-            }
-
-            prefetchingStorageCategoryIDs.insert(listID)
-            do {
-                let files = try await fileRepository.storageCategoryFiles(
-                    device: device,
-                    summary: breakdown.summary,
-                    category: category
-                )
-                guard shouldContinueStoragePrefetch(device: device) else { return }
-                storageCategoryFileLists[listID] = StorageCategoryFileList(
-                    summaryID: breakdown.summary.id,
-                    category: category,
-                    files: files
-                )
-            } catch {
-                // Background prefetch should not interrupt active browsing. Foreground selection can retry and report details.
-            }
-            prefetchingStorageCategoryIDs.remove(listID)
             await Task.yield()
         }
     }
 
-    private func prefetchAppsIfNeeded(listID: StorageCategoryFileList.ID) async {
-        guard packages.isEmpty else {
-            return
-        }
+    private func waitForStoragePrefetchIdle(
+        device: AndroidDevice,
+        signature: String,
+        generation: Int
+    ) async -> Bool {
+        while true {
+            guard isCurrentStoragePrefetch(
+                device: device,
+                signature: signature,
+                generation: generation
+            ) else { return false }
 
-        prefetchingStorageCategoryIDs.insert(listID)
-        do {
-            try await loadPackagesThrowing()
-        } catch {
-            // Foreground Apps selection will retry and show an error if needed.
+            guard storagePrefetchActivity.isIdle else {
+                do {
+                    try await Task.sleep(for: .milliseconds(250))
+                } catch {
+                    return false
+                }
+                continue
+            }
+
+            do {
+                // Require a quiet window so a scan does not start in the small gap
+                // between consecutive foreground ADB commands.
+                try await Task.sleep(for: .seconds(1.2))
+            } catch {
+                return false
+            }
+            return isCurrentStoragePrefetch(
+                device: device,
+                signature: signature,
+                generation: generation
+            ) && storagePrefetchActivity.isIdle
         }
-        prefetchingStorageCategoryIDs.remove(listID)
     }
 
-    private func shouldContinueStoragePrefetch(device: AndroidDevice) -> Bool {
-        !Task.isCancelled && selectedDevice?.id == device.id && selectedDevice?.state == .device
+    private func isCurrentStoragePrefetch(
+        device: AndroidDevice,
+        signature: String,
+        generation: Int
+    ) -> Bool {
+        !Task.isCancelled
+            && storageCategoryPrefetchSignature == signature
+            && storageCategoryPrefetchGeneration == generation
+            && selectedDevice?.id == device.id
+            && selectedDevice?.state == .device
+    }
+
+    private func shouldContinueStoragePrefetch(
+        device: AndroidDevice,
+        signature: String,
+        generation: Int
+    ) -> Bool {
+        isCurrentStoragePrefetch(device: device, signature: signature, generation: generation)
+            && storagePrefetchActivity.isIdle
     }
 
     private func sortedPackagesForDisplay(_ packages: [AndroidPackage]) -> [AndroidPackage] {
@@ -8067,10 +8222,9 @@ public final class AppModel: ObservableObject {
             currentPath = home.path
             sidebarSelection = .location(home)
         }
-        // Storage category scans walk much of the phone and can monopolize the ADB
-        // connection. Load them when the user opens Storage instead of delaying normal
-        // file browsing in the background.
-        cancelStorageCategoryPrefetch()
+        // Only the volume breakdown is prepared automatically. Per-category file
+        // scans remain user initiated because they can walk much of the phone.
+        scheduleStorageBreakdownPrefetch(device: device, summaries: loadedSummaries)
     }
 
     private func refreshBatteryStatus() async {
@@ -8284,6 +8438,7 @@ public final class AppModel: ObservableObject {
     private func beginTrackedOperation(blocksTermination: Bool = true) {
         operationActivity.begin(blocksTermination: blocksTermination)
         isBusy = operationActivity.isBusy
+        storagePrefetchActivityDidChange()
     }
 
     private func cancelDeviceScopedReadWork() {
@@ -8295,6 +8450,7 @@ public final class AppModel: ObservableObject {
     private func endTrackedOperation(blocksTermination: Bool = true) {
         operationActivity.end(blocksTermination: blocksTermination)
         isBusy = operationActivity.isBusy
+        storagePrefetchActivityDidChange()
     }
 
     private func handleOperationError(_ error: Error) {
