@@ -246,7 +246,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let model else { return .terminateNow }
         guard model.beginTerminationRequest() else {
-            presentOperationInProgressAlert()
+            presentOperationInProgressAlert(model: model)
             return .terminateCancel
         }
         guard confirmClosingPhoneControlWindowsIfNeeded(model: model) else {
@@ -382,11 +382,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         return "\(summary)\n\n\(details)\(more)"
     }
 
-    private func presentOperationInProgressAlert() {
+    private func presentOperationInProgressAlert(model: AppModel) {
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "A file operation is still in progress"
-        alert.informativeText = "Let it finish, then quit again."
+        if model.hasActiveScreenRecordingActivity {
+            alert.messageText = "A screen recording is still in progress"
+            alert.informativeText = "Stop the recording and wait for it to save, then quit again."
+        } else {
+            alert.messageText = "A file operation is still in progress"
+            alert.informativeText = "Let it finish, then quit again."
+        }
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }

@@ -83,6 +83,7 @@ With Developer Options and USB or Wi-Fi debugging, you can:
 - Drag APK, XAPK, APKS, and split ZIP packages from Finder to install them. Dropping several APKs opens an editable install queue in the Progress panel, with per-app errors for downgrade and signature conflicts.
 - Remove, open, stop, or clear apps.
 - Capture one display or combine multiple displays side by side in one screenshot or recording.
+- Add system audio, a phone microphone, or both to screen recordings, with the Mac's current system input as another option. Each phone can contribute its own audio to a side-by-side video.
 - Open more than one connected device at a time. Each device gets its own screen and control bar.
 
 [See all Phone Tools](https://ababilinski.github.io/asop-file-browser/phone-tools/)
