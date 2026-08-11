@@ -36,7 +36,7 @@ if [[ -n "$RELEASE_ARTIFACT_SUFFIX" && ! "$RELEASE_ARTIFACT_SUFFIX" =~ ^[A-Za-z0
   exit 2
 fi
 SUFFIX="${RELEASE_ARTIFACT_SUFFIX:+-$RELEASE_ARTIFACT_SUFFIX}"
-DISK_IMAGE_NAME="ASOP-File-Browser-$VERSION-macOS$SUFFIX.dmg"
+DISK_IMAGE_NAME="AOSP-File-Manager-$VERSION-macOS$SUFFIX.dmg"
 CHECKSUM_NAME="$DISK_IMAGE_NAME.sha256"
 
 mkdir -p "$OUTPUT_DIRECTORY"
@@ -46,7 +46,7 @@ CHECKSUM_PATH="$OUTPUT_DIRECTORY/$CHECKSUM_NAME"
 TEMPORARY_DIRECTORY="$(/usr/bin/mktemp -d -t asop-release-image.XXXXXX)"
 STAGING_DIRECTORY="$TEMPORARY_DIRECTORY/staging"
 MOUNT_POINT="$TEMPORARY_DIRECTORY/mount"
-WRITABLE_DISK_IMAGE="$TEMPORARY_DIRECTORY/ASOP-File-Browser-writable.dmg"
+WRITABLE_DISK_IMAGE="$TEMPORARY_DIRECTORY/AOSP-File-Manager-writable.dmg"
 ATTACHED=false
 
 cleanup() {
@@ -66,7 +66,7 @@ if [[ ! -f "$VOLUME_ICON" ]]; then
 fi
 
 /bin/mkdir -p "$STAGING_DIRECTORY" "$MOUNT_POINT"
-/usr/bin/ditto "$APP_PATH" "$STAGING_DIRECTORY/ASOP File Browser.app"
+/usr/bin/ditto "$APP_PATH" "$STAGING_DIRECTORY/AOSP File Manager.app"
 /bin/ln -s /Applications "$STAGING_DIRECTORY/Applications"
 /usr/bin/ditto "$VOLUME_ICON" "$STAGING_DIRECTORY/.VolumeIcon.icns"
 
@@ -83,7 +83,7 @@ create_writable_disk_image() {
       -ov \
       -fs HFS+ \
       -format UDRW \
-      -volname "ASOP File Browser" \
+      -volname "AOSP File Manager" \
       -srcfolder "$STAGING_DIRECTORY" \
       "$WRITABLE_DISK_IMAGE" 2>&1)"; then
       printf '%s\n' "$output"

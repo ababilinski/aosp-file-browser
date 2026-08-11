@@ -15,7 +15,7 @@ struct AndroidFileBrowserApp: App {
     }
 
     var body: some Scene {
-        Window("ASOP File Browser", id: "main") {
+        Window("AOSP File Manager", id: "main") {
             RootView(model: model)
                 .frame(minWidth: 1120, minHeight: 720)
                 .preferredColorScheme(settings.appearanceMode.colorScheme)
@@ -308,8 +308,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             ? "Close Phone Control and quit?"
             : "Close Phone Control windows and quit?"
         alert.informativeText = windowCount == 1
-            ? "Closing ASOP File Browser will also close the Phone Control window opened by this app."
-            : "Closing ASOP File Browser will also close the \(windowCount) Phone Control windows opened by this app."
+            ? "Closing AOSP File Manager will also close the Phone Control window opened by this app."
+            : "Closing AOSP File Manager will also close the \(windowCount) Phone Control windows opened by this app."
         alert.addButton(withTitle: "Close Windows and Quit")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn

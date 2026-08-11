@@ -1,6 +1,6 @@
 # Features
 
-ASOP File Browser has two connection modes. **File Transfer Mode** uses a USB cable for everyday file browsing and transfers. **Developer Options** works over USB or Wi-Fi and adds Search Everywhere, Trash, storage details, and Phone Tools.
+AOSP File Manager has two connection modes. **File Transfer Mode** uses a USB cable for everyday file browsing and transfers. **Developer Options** works over USB or Wi-Fi and adds Search Everywhere, Trash, storage details, and Phone Tools.
 
 **No phone app is needed for either mode.**
 

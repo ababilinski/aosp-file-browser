@@ -657,7 +657,7 @@ public struct ToolchainCandidate: Identifiable, Hashable, Sendable {
         switch source {
         case .running: "Running"
         case .selected: "Selected"
-        case .managed: "Managed by ASOP File Browser"
+        case .managed: "Managed by AOSP File Manager"
         case .bundled: "Bundled"
         case .environment: "Environment"
         case .androidSDK: "Android SDK"
@@ -1180,7 +1180,7 @@ public actor ADBClient {
 
     public func launchScrcpy(
         serial: String,
-        windowTitle: String = "ASOP File Browser Phone Control",
+        windowTitle: String = "AOSP File Manager Phone Control",
         options: ScreenRecordingOptions = ScreenRecordingOptions(),
         deviceOptions: PhoneControlDeviceOptions = PhoneControlDeviceOptions(),
         placement: ScrcpyWindowPlacement? = nil

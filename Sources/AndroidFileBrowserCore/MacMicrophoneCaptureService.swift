@@ -12,7 +12,7 @@ public enum MacMicrophoneCaptureError: LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .permissionDenied:
-            "Microphone access is off. Allow ASOP File Browser to use the microphone in System Settings > Privacy & Security > Microphone, then try again."
+            "Microphone access is off. Allow AOSP File Manager to use the microphone in System Settings > Privacy & Security > Microphone, then try again."
         case .permissionRestricted:
             "Microphone access is restricted on this Mac."
         case .inputUnavailable:

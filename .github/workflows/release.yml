@@ -153,11 +153,11 @@ jobs:
           APP_VERSION="$APP_VERSION" \
           APP_BUILD="$APP_BUILD" \
           APP_ARCHITECTURE="universal" \
-          APP_BUNDLE_OUTPUT_PATH=".build/release-universal/ASOP File Browser.app" \
+          APP_BUNDLE_OUTPUT_PATH=".build/release-universal/AOSP File Manager.app" \
           CODE_SIGN_IDENTITY="-" \
           ./scripts/package-app.sh
 
-          app_path=".build/release-universal/ASOP File Browser.app"
+          app_path=".build/release-universal/AOSP File Manager.app"
           ./scripts/create-release-archive.sh \
             "$app_path" \
             "dist" \
@@ -176,15 +176,15 @@ jobs:
             --require-no-bundled-tools
 
       - name: Open the tested candidate
-        run: ./scripts/verify-app-launch.sh ".build/release-universal/ASOP File Browser.app"
+        run: ./scripts/verify-app-launch.sh ".build/release-universal/AOSP File Manager.app"
 
       - name: Upload candidate for signing
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-candidate-${{ inputs.commit }}-${{ inputs.version }}-${{ inputs.build }}
           path: |
-            dist/ASOP-File-Browser-${{ inputs.version }}-macOS.zip
-            dist/ASOP-File-Browser-${{ inputs.version }}-macOS.zip.sha256
+            dist/AOSP-File-Manager-${{ inputs.version }}-macOS.zip
+            dist/AOSP-File-Manager-${{ inputs.version }}-macOS.zip.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -232,7 +232,7 @@ jobs:
       - name: Verify and extract the tested universal candidate
         run: |
           mkdir -p "$RELEASE_STAGING_ROOT"
-          archive="ASOP-File-Browser-$APP_VERSION-macOS.zip"
+          archive="AOSP-File-Manager-$APP_VERSION-macOS.zip"
           (
             cd candidate
             shasum -a 256 -c "$archive.sha256"
@@ -241,7 +241,7 @@ jobs:
           mkdir -p "$destination"
           ditto -x -k "candidate/$archive" "$destination"
           ./scripts/validate-app-bundle.sh \
-            "$destination/ASOP File Browser.app" \
+            "$destination/AOSP File Manager.app" \
             --version "$APP_VERSION" \
             --build "$APP_BUILD" \
             --architecture universal \
@@ -308,7 +308,7 @@ jobs:
 
       - name: Apply and verify Developer ID signatures
         run: |
-          app_path="$RELEASE_STAGING_ROOT/universal/ASOP File Browser.app"
+          app_path="$RELEASE_STAGING_ROOT/universal/AOSP File Manager.app"
           codesign \
             --force \
             --options runtime \
@@ -328,8 +328,8 @@ jobs:
 
       - name: Create and sign the universal release disk image
         run: |
-          app_path="$RELEASE_STAGING_ROOT/universal/ASOP File Browser.app"
-          disk_image="dist/ASOP-File-Browser-$APP_VERSION-macOS.dmg"
+          app_path="$RELEASE_STAGING_ROOT/universal/AOSP File Manager.app"
+          disk_image="dist/AOSP-File-Manager-$APP_VERSION-macOS.dmg"
           ./scripts/create-release-disk-image.sh \
             "$app_path" \
             "dist" \
@@ -360,7 +360,7 @@ jobs:
         run: |
           mkdir -p "$NOTARY_RECORDS"
           architecture="universal"
-          disk_image="dist/ASOP-File-Browser-$APP_VERSION-macOS.dmg"
+          disk_image="dist/AOSP-File-Manager-$APP_VERSION-macOS.dmg"
           notary_result="$NOTARY_RECORDS/$architecture-result.json"
           notary_log="$NOTARY_RECORDS/$architecture-log.json"
           rm -f "$notary_result" "$notary_log"
@@ -418,7 +418,7 @@ jobs:
 
       - name: Staple and validate the universal release disk image
         run: |
-          disk_image="dist/ASOP-File-Browser-$APP_VERSION-macOS.dmg"
+          disk_image="dist/AOSP-File-Manager-$APP_VERSION-macOS.dmg"
           xcrun stapler staple "$disk_image"
           ./scripts/validate-release-disk-image.sh \
             "$disk_image" \
@@ -439,7 +439,7 @@ jobs:
       - name: Record final disk image digest
         id: release_digest
         run: |
-          echo "universal_sha256=$(shasum -a 256 "dist/ASOP-File-Browser-$APP_VERSION-macOS.dmg" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "universal_sha256=$(shasum -a 256 "dist/AOSP-File-Manager-$APP_VERSION-macOS.dmg" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Remove temporary release credentials
         if: ${{ always() }}
@@ -457,8 +457,8 @@ jobs:
         with:
           name: notarized-release-${{ inputs.version }}-${{ inputs.build }}
           path: |
-            dist/ASOP-File-Browser-${{ inputs.version }}-macOS.dmg
-            dist/ASOP-File-Browser-${{ inputs.version }}-macOS.dmg.sha256
+            dist/AOSP-File-Manager-${{ inputs.version }}-macOS.dmg
+            dist/AOSP-File-Manager-${{ inputs.version }}-macOS.dmg.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
@@ -511,7 +511,7 @@ jobs:
         env:
           EXPECTED_UNIVERSAL_SHA256: ${{ needs.sign-and-notarize.outputs.universal_dmg_sha256 }}
         run: |
-          disk_image="dist/ASOP-File-Browser-$APP_VERSION-macOS.dmg"
+          disk_image="dist/AOSP-File-Manager-$APP_VERSION-macOS.dmg"
           (
             cd dist
             shasum -a 256 -c "$(basename "$disk_image").sha256"
@@ -558,7 +558,7 @@ jobs:
           EXPECTED_UNIVERSAL_SHA256: ${{ needs.sign-and-notarize.outputs.universal_dmg_sha256 }}
         run: |
           cd dist
-          disk_image="ASOP-File-Browser-$APP_VERSION-macOS.dmg"
+          disk_image="AOSP-File-Manager-$APP_VERSION-macOS.dmg"
           sha256sum -c "$disk_image.sha256"
           actual_sha256="$(sha256sum "$disk_image" | awk '{print $1}')"
           if [[ "$actual_sha256" != "$EXPECTED_UNIVERSAL_SHA256" ]]; then
@@ -569,7 +569,7 @@ jobs:
       - name: Attest release provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: dist/ASOP-File-Browser-${{ inputs.version }}-macOS.dmg
+          subject-path: dist/AOSP-File-Manager-${{ inputs.version }}-macOS.dmg
 
       - name: Publish GitHub release
         env:
@@ -602,7 +602,7 @@ jobs:
           RELEASE_ARGUMENTS=(
             "$TAG"
             --target "$RELEASE_SHA"
-            --title "ASOP File Browser $APP_VERSION"
+            --title "AOSP File Manager $APP_VERSION"
             --generate-notes
             --draft
           )
@@ -617,13 +617,13 @@ jobs:
             echo "GitHub did not return the ID of the draft release." >&2
             exit 1
           fi
-          UNIVERSAL_DMG="dist/ASOP-File-Browser-$APP_VERSION-macOS.dmg"
+          UNIVERSAL_DMG="dist/AOSP-File-Manager-$APP_VERSION-macOS.dmg"
           ASSETS=(
             "$UNIVERSAL_DMG"
             "$UNIVERSAL_DMG.sha256"
           )
           gh release upload "$TAG" \
-            "$UNIVERSAL_DMG#ASOP File Browser $APP_VERSION for macOS (Universal: Apple silicon arm64 + Intel x86_64)" \
+            "$UNIVERSAL_DMG#AOSP File Manager $APP_VERSION for macOS (Universal: Apple silicon arm64 + Intel x86_64)" \
             "$UNIVERSAL_DMG.sha256#Universal SHA-256 checksum"
 
           for asset in "${ASSETS[@]}"; do

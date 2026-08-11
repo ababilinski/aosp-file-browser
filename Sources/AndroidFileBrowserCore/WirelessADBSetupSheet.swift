@@ -75,7 +75,7 @@ struct WirelessADBSetupSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Do you want to use the legacy USB ADB handoff?")
                     .font(.headline)
-                Text("After you confirm, ASOP File Browser will ask this USB-authorized device to listen on unencrypted port 5555, connect to its Wi-Fi address, and verify the connection before you unplug the cable.")
+                Text("After you confirm, AOSP File Manager will ask this USB-authorized device to listen on unencrypted port 5555, connect to its Wi-Fi address, and verify the connection before you unplug the cable.")
                     .fixedSize(horizontal: false, vertical: true)
                 Label("Keep the cable connected until the app says Wi-Fi is ready.", systemImage: "cable.connector")
                     .foregroundStyle(.secondary)
@@ -122,7 +122,7 @@ struct WirelessADBSetupSheet: View {
                 Text("Android reports that secure Wireless debugging is not supported on this device.")
                     .font(.headline)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("ASOP File Browser will not try to change the Wireless debugging setting. You can keep using USB or explicitly try the legacy USB-authorized handoff.")
+                Text("AOSP File Manager will not try to change the Wireless debugging setting. You can keep using USB or explicitly try the legacy USB-authorized handoff.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 setupOption(
@@ -136,7 +136,7 @@ struct WirelessADBSetupSheet: View {
 
         case .confirmWirelessDebuggingEnable:
             VStack(alignment: .leading, spacing: 12) {
-                Text("Do you want ASOP File Browser to ask Android to turn on Wireless debugging?")
+                Text("Do you want AOSP File Manager to ask Android to turn on Wireless debugging?")
                     .font(.headline)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("This changes a security-sensitive Developer option. Android may display a confirmation on the phone for the current Wi-Fi network; Wireless debugging remains off until that approval is accepted.")
@@ -177,7 +177,7 @@ struct WirelessADBSetupSheet: View {
                 Label("Secure Wireless debugging is on.", systemImage: "checkmark.circle.fill")
                     .font(.headline)
                     .foregroundStyle(.green)
-                Text("Closing this window leaves the Android setting on. To use its encrypted connection, pair this Mac with the QR code shown by ASOP File Browser.")
+                Text("Closing this window leaves the Android setting on. To use its encrypted connection, pair this Mac with the QR code shown by AOSP File Manager.")
                     .fixedSize(horizontal: false, vertical: true)
                 setupOption(
                     title: "Pair securely",
@@ -233,7 +233,7 @@ struct WirelessADBSetupSheet: View {
                 Label("Wi-Fi connection confirmed", systemImage: "checkmark.circle.fill")
                     .font(.headline)
                     .foregroundStyle(.green)
-                Text("You can unplug the USB cable. ASOP File Browser will continue using \(endpoint).")
+                Text("You can unplug the USB cable. AOSP File Manager will continue using \(endpoint).")
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }

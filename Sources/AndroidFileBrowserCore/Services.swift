@@ -359,7 +359,7 @@ public actor DeviceManager {
             let message = commandMessage(result)
             if result.exitCode == 0,
                message.localizedCaseInsensitiveContains("restarting in USB mode") {
-                return "ASOP File Browser returned ADB to USB-only mode."
+                return "AOSP File Manager returned ADB to USB-only mode."
             }
             return "Warning: Android did not confirm that legacy port 5555 was disabled. Disconnect from untrusted networks or turn USB debugging off and on. Rollback details: \(message)"
         } catch {

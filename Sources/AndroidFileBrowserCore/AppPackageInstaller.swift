@@ -334,7 +334,7 @@ public actor AppPackageInstaller {
         }
 
         let workDirectory = fileManager.temporaryDirectory
-            .appending(path: "ASOP-AppInstall-\(UUID().uuidString)", directoryHint: .isDirectory)
+            .appending(path: "AOSP-AppInstall-\(UUID().uuidString)", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: workDirectory) }
 
@@ -609,7 +609,7 @@ public actor AppPackageInstaller {
             defer { try? outputHandle.close() }
 
             let temporaryDirectory = FileManager.default.temporaryDirectory
-                .appending(path: "ASOP-AppInstallProcess-\(UUID().uuidString)", directoryHint: .isDirectory)
+                .appending(path: "AOSP-AppInstallProcess-\(UUID().uuidString)", directoryHint: .isDirectory)
             try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
             let stderrURL = temporaryDirectory.appending(path: "stderr")

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 MODE="${1:-run}"
-APP_NAME="ASOP File Browser"
+APP_NAME="AOSP File Manager"
 BUNDLE_ID="com.ababilinski.android-file-browser"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_BUNDLE="$ROOT_DIR/.build/release/$APP_NAME.app"

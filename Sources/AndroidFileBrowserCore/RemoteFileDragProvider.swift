@@ -147,7 +147,7 @@ private final class FilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate
         self.fileName = fileName
         self.exportTo = exportTo
         self.operationQueue = OperationQueue()
-        self.operationQueue.name = "ASOP File Browser File Promise"
+        self.operationQueue.name = "AOSP File Manager File Promise"
         self.operationQueue.maxConcurrentOperationCount = 1
         super.init()
     }

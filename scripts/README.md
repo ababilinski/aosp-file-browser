@@ -11,12 +11,12 @@ the normal publishing flow are documented in [`RELEASING.md`](../RELEASING.md).
 
 # Validate the packaged app.
 ./scripts/validate-app-bundle.sh \
-  ".build/release/ASOP File Browser.app" \
+  ".build/release/AOSP File Manager.app" \
   --require-no-bundled-tools
 
 # Create and validate a local DMG and checksum.
 ./scripts/create-release-disk-image.sh \
-  ".build/release/ASOP File Browser.app" \
+  ".build/release/AOSP File Manager.app" \
   dist \
   "$(cat VERSION)" \
   --require-no-bundled-tools
