@@ -17,7 +17,9 @@ struct RemoteBrowserDragItem: Codable, Hashable, Sendable {
 
 struct RemoteBrowserDragPayload: Codable, Sendable {
     static let filePromisePasteboardType = NSPasteboard.PasteboardType("com.apple.NSFilePromiseItemMetaData")
-    static let internalPasteboardType = NSPasteboard.PasteboardType("com.adrianbabilinski.asop-file-browser.remote-browser-drag")
+    static let internalPasteboardType = NSPasteboard.PasteboardType(
+        "\(AOSPAppIdentity.bundleIdentifier).remote-browser-drag"
+    )
 
     let backend: RemoteBrowserDragBackend
     let deviceID: String

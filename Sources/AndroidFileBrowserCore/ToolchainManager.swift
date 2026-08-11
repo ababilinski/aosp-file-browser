@@ -54,11 +54,32 @@ public struct ManagedToolchainRelease: Sendable, Equatable {
 }
 
 public enum ToolchainPaths {
-    public static func managedToolsRoot(fileManager: FileManager = .default) -> URL {
-        let applicationSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+    public static func managedToolsRoot(
+        fileManager: FileManager = .default,
+        applicationSupportDirectory: URL? = nil
+    ) -> URL {
+        let applicationSupport = applicationSupportDirectory
+            ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appending(path: "Library/Application Support")
-        return applicationSupport
-            .appending(path: "com.ababilinski.android-file-browser", directoryHint: .isDirectory)
+        let currentRoot = applicationSupport.appending(
+            path: AOSPAppIdentity.bundleIdentifier,
+            directoryHint: .isDirectory
+        )
+        let legacyRoot = applicationSupport.appending(
+            path: AOSPAppIdentity.legacyBundleIdentifier,
+            directoryHint: .isDirectory
+        )
+
+        if !fileManager.fileExists(atPath: currentRoot.path),
+           fileManager.fileExists(atPath: legacyRoot.path) {
+            do {
+                try fileManager.moveItem(at: legacyRoot, to: currentRoot)
+            } catch {
+                return legacyRoot.appending(path: "Tools", directoryHint: .isDirectory)
+            }
+        }
+
+        return currentRoot
             .appending(path: "Tools", directoryHint: .isDirectory)
     }
 

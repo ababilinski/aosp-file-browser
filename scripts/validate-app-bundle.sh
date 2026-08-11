@@ -38,6 +38,9 @@ APP_PATH="${1:-}"
 shift
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/app-identity.sh"
+APP_NAME="$AOSP_APP_NAME"
+BUNDLE_ID="$AOSP_BUNDLE_ID"
 APPROVED_ENTITLEMENTS="$ROOT/Resources/AndroidFileBrowser.entitlements"
 
 EXPECTED_VERSION=""
@@ -105,7 +108,7 @@ CONTENTS="$APP_PATH/Contents"
 RESOURCES="$CONTENTS/Resources"
 LICENSES="$RESOURCES/Licenses"
 INFO_PLIST="$CONTENTS/Info.plist"
-EXECUTABLE="$CONTENTS/MacOS/AOSP File Manager"
+EXECUTABLE="$CONTENTS/MacOS/$APP_NAME"
 
 require_directory "$CONTENTS"
 require_file "$INFO_PLIST"
@@ -118,12 +121,14 @@ plist_value() {
   /usr/bin/plutil -extract "$1" raw -o - "$INFO_PLIST" 2>/dev/null
 }
 
-[[ "$(plist_value CFBundleIdentifier)" == "com.ababilinski.android-file-browser" ]] \
+[[ "$(plist_value CFBundleIdentifier)" == "$BUNDLE_ID" ]] \
   || fail "Unexpected bundle identifier."
-[[ "$(plist_value CFBundleExecutable)" == "AOSP File Manager" ]] \
+[[ "$(plist_value CFBundleExecutable)" == "$APP_NAME" ]] \
   || fail "Unexpected bundle executable."
-[[ "$(plist_value CFBundleName)" == "AOSP File Manager" ]] \
+[[ "$(plist_value CFBundleName)" == "$APP_NAME" ]] \
   || fail "Unexpected bundle name."
+[[ "$(plist_value CFBundleDisplayName)" == "$APP_NAME" ]] \
+  || fail "Unexpected bundle display name."
 [[ "$(plist_value CFBundlePackageType)" == "APPL" ]] \
   || fail "Unexpected bundle package type."
 [[ "$(plist_value LSMinimumSystemVersion)" == "13.0" ]] \

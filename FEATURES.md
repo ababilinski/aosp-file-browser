@@ -4,7 +4,7 @@ AOSP File Manager has two connection modes. **File Transfer Mode** uses a USB ca
 
 **No phone app is needed for either mode.**
 
-[Setup](https://ababilinski.github.io/asop-file-browser/connect/) · [Troubleshooting](https://ababilinski.github.io/asop-file-browser/faq/#troubleshooting-title) · [Back to README](README.md)
+[Setup](https://ababilinski.github.io/aosp-file-browser/connect/) · [Troubleshooting](https://ababilinski.github.io/aosp-file-browser/faq/#troubleshooting-title) · [Back to README](README.md)
 
 ## Files and folders
 
@@ -67,7 +67,7 @@ Phone Tools are available with Developer Options enabled.
 - **Control one or more devices.** Open a separate live screen for each connected device. Every screen has its own Mac control bar for battery level, navigation, volume, rotation, screenshots, and power.
 - **Tune each device window.** Choose audio, input, clipboard, frame rate, video format, screen behavior, and window placement for each connected device.
 
-[Learn how to set up Phone Tools](https://ababilinski.github.io/asop-file-browser/phone-tools/)
+[Learn how to set up Phone Tools](https://ababilinski.github.io/aosp-file-browser/phone-tools/)
 
 ## Cache and Trash controls
 

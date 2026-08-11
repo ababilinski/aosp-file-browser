@@ -2,9 +2,10 @@
 set -euo pipefail
 
 MODE="${1:-run}"
-APP_NAME="AOSP File Manager"
-BUNDLE_ID="com.ababilinski.android-file-browser"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/app-identity.sh"
+APP_NAME="$AOSP_APP_NAME"
+BUNDLE_ID="$AOSP_BUNDLE_ID"
 APP_BUNDLE="$ROOT_DIR/.build/release/$APP_NAME.app"
 APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 

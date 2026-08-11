@@ -22,14 +22,14 @@ Requires macOS 13 Ventura or later.
 
 ## Quick links
 
-- [Setup](https://ababilinski.github.io/asop-file-browser/connect/) — Choose a connection and follow the steps.
+- [Setup](https://ababilinski.github.io/aosp-file-browser/connect/) — Choose a connection and follow the steps.
 - [Features](FEATURES.md) — See what the app can do in each connection mode.
-- [Troubleshooting](https://ababilinski.github.io/asop-file-browser/faq/#troubleshooting-title) — Fix common connection and transfer problems.
-- [FAQ](https://ababilinski.github.io/asop-file-browser/faq/) — Read answers to common questions.
-- [Phone Tools](https://ababilinski.github.io/asop-file-browser/phone-tools/) — Learn about screenshots, recording, phone control, and app management.
-- [Releases](https://github.com/ababilinski/asop-file-browser/releases) — Download the app.
+- [Troubleshooting](https://ababilinski.github.io/aosp-file-browser/faq/#troubleshooting-title) — Fix common connection and transfer problems.
+- [FAQ](https://ababilinski.github.io/aosp-file-browser/faq/) — Read answers to common questions.
+- [Phone Tools](https://ababilinski.github.io/aosp-file-browser/phone-tools/) — Learn about screenshots, recording, phone control, and app management.
+- [Releases](https://github.com/ababilinski/aosp-file-browser/releases) — Download the app.
 - [Changelog](CHANGELOG.md) — See what changed in each version.
-- [Privacy](https://ababilinski.github.io/asop-file-browser/privacy/) — See what stays on your Mac and phone.
+- [Privacy](https://ababilinski.github.io/aosp-file-browser/privacy/) — See what stays on your Mac and phone.
 - [Third-Party Notices](THIRD_PARTY_NOTICES.md) — Review third-party software and licenses.
 - [Build from source](#build-from-source) — Build and run the project locally.
 - [Release process](RELEASING.md) — Prepare and publish a release.
@@ -72,7 +72,7 @@ For File Transfer Mode, unlock the phone, choose **File transfer / Android Auto*
 
 For Developer Options, connect with USB debugging or pair over Wi-Fi. Wi-Fi pairing uses the QR code shown on your Mac.
 
-[File Transfer Mode steps](https://ababilinski.github.io/asop-file-browser/connect/#file-transfer) · [Developer Options steps](https://ababilinski.github.io/asop-file-browser/connect/#developer-options)
+[File Transfer Mode steps](https://ababilinski.github.io/aosp-file-browser/connect/#file-transfer) · [Developer Options steps](https://ababilinski.github.io/aosp-file-browser/connect/#developer-options)
 
 ## Phone Tools
 
@@ -86,7 +86,7 @@ With Developer Options and USB or Wi-Fi debugging, you can:
 - Add system audio, a phone microphone, or both to screen recordings, with the Mac's current system input as another option. Each phone can contribute its own audio to a side-by-side video.
 - Open more than one connected device at a time. Each device gets its own screen and control bar.
 
-[See all Phone Tools](https://ababilinski.github.io/asop-file-browser/phone-tools/)
+[See all Phone Tools](https://ababilinski.github.io/aosp-file-browser/phone-tools/)
 
 ## App views
 
@@ -108,11 +108,11 @@ With Developer Options and USB or Wi-Fi debugging, you can:
 
 Files move directly between your phone and Mac. No account is needed.
 
-[Read the Privacy Policy](https://ababilinski.github.io/asop-file-browser/privacy/)
+[Read the Privacy Policy](https://ababilinski.github.io/aosp-file-browser/privacy/)
 
 ## Install
 
-Download the universal Mac build from [Releases](https://github.com/ababilinski/asop-file-browser/releases). The same app contains native `arm64` code for Apple silicon and `x86_64` code for Intel Macs.
+Download the universal Mac build from [Releases](https://github.com/ababilinski/aosp-file-browser/releases). The same app contains native `arm64` code for Apple silicon and `x86_64` code for Intel Macs.
 
 You can also build the app from source.
 
@@ -145,7 +145,7 @@ Read about [Managed Copy and tool setup](TOOLS.md), or see the complete [Third-p
 
 The GitHub Pages site lives in [`docs/`](docs/).
 
-[Terms of Service](https://ababilinski.github.io/asop-file-browser/terms/) · [Privacy Policy](https://ababilinski.github.io/asop-file-browser/privacy/) · [Third-Party Notices](THIRD_PARTY_NOTICES.md)
+[Terms of Service](https://ababilinski.github.io/aosp-file-browser/terms/) · [Privacy Policy](https://ababilinski.github.io/aosp-file-browser/privacy/) · [Third-Party Notices](THIRD_PARTY_NOTICES.md)
 
 ## License
 
