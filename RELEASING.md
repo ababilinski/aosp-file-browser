@@ -1,11 +1,11 @@
 # Release process
 
 Pull requests cannot merge until the **Release readiness** check passes. That
-check builds and tests the app on Apple silicon and Intel runners, then creates
-universal, Apple silicon, and Intel app bundles. Each DMG has an Applications
-shortcut and the app's icon as its mounted-volume icon. CI verifies every
-checksum, mounts each image read-only, validates the contained app and volume
-icon, and opens the universal and matching native app on both runner types.
+check builds one universal app containing native `arm64` code for Apple silicon
+and `x86_64` code for Intel Macs. The DMG has an Applications shortcut and the
+app's icon as its mounted-volume icon. CI verifies its checksum, mounts it
+read-only, validates both architectures, and opens the same universal app on
+Apple silicon and Intel runners.
 
 Pull-request builds are ad-hoc signed and never receive Apple credentials.
 
@@ -134,20 +134,20 @@ build number. The automated release path uses the current validated `main`
 snapshot. This also lets a failed release include a later pipeline-only fix
 without changing the app version or bypassing its original version transition.
 
-The workflow builds and tests all three candidates before it can access release
-credentials, including opening the universal app and requiring it to remain
+The workflow builds and tests one universal candidate before it can access
+release credentials, including opening the app and requiring it to remain
 running. A protected job then imports the temporary signing identity, signs the
-exact tested candidates, and runs Apple's local notarization-readiness check.
+exact tested candidate, and runs Apple's local notarization-readiness check.
 If that check returns only its exact internal XProtect error, the workflow
 retries three times before deferring to Apple's notary service; every other
-local finding remains blocking. The job creates and signs three read-only DMGs,
-submits each one to Apple, requires Accepted results and issue-free notarization
-logs, staples every ticket, checks Gatekeeper, and removes the credentials. The
-ZIPs used to pass tested apps between jobs are private and never published.
-Separate jobs with no Apple credentials open the universal build on both Mac
-architectures and the matching native build on each one. The publishing job
-verifies all digests again, creates provenance attestations, and publishes the
-universal DMG (recommended), Apple silicon DMG, Intel DMG, and their checksums.
+local finding remains blocking. The job creates and signs one read-only DMG,
+submits it to Apple, requires an Accepted result and an issue-free notarization
+log, staples its ticket, checks Gatekeeper, and removes the credentials. The ZIP
+used to pass the tested app between jobs is private and never published.
+Separate jobs with no Apple credentials open the same universal build on Apple
+silicon (`arm64`) and Intel (`x86_64`) Macs. The publishing job verifies its
+digest again, creates a provenance attestation, and publishes the universal DMG
+and its checksum.
 
 Each DMG is an outer distribution that Apple notarizes and staples. Validation
 also mounts it read-only and asks Gatekeeper to assess the contained app, but
@@ -172,6 +172,5 @@ APP_VERSION=0.3.0 APP_BUILD=3 ./scripts/package-app.sh
   --require-no-bundled-tools
 ```
 
-Set `APP_ARCHITECTURE=arm64` or `APP_ARCHITECTURE=x86_64` to create a native
-bundle in `.build/release-arm64` or `.build/release-x86_64`. Pass the matching
-`--architecture` value to the validation and disk-image scripts.
+The default package is universal. Validation requires both `arm64` and
+`x86_64` slices before the app can be distributed.

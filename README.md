@@ -112,7 +112,7 @@ Files move directly between your phone and Mac. No account is needed.
 
 ## Install
 
-Download the universal Mac build from [Releases](https://github.com/ababilinski/asop-file-browser/releases). It runs on Apple silicon and Intel Macs. Smaller downloads for each processor are available on the same page.
+Download the universal Mac build from [Releases](https://github.com/ababilinski/asop-file-browser/releases). The same app contains native `arm64` code for Apple silicon and `x86_64` code for Intel Macs.
 
 You can also build the app from source.
 
