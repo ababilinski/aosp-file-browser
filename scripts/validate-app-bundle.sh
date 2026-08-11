@@ -105,7 +105,7 @@ CONTENTS="$APP_PATH/Contents"
 RESOURCES="$CONTENTS/Resources"
 LICENSES="$RESOURCES/Licenses"
 INFO_PLIST="$CONTENTS/Info.plist"
-EXECUTABLE="$CONTENTS/MacOS/ASOP File Browser"
+EXECUTABLE="$CONTENTS/MacOS/AOSP File Manager"
 
 require_directory "$CONTENTS"
 require_file "$INFO_PLIST"
@@ -120,9 +120,9 @@ plist_value() {
 
 [[ "$(plist_value CFBundleIdentifier)" == "com.ababilinski.android-file-browser" ]] \
   || fail "Unexpected bundle identifier."
-[[ "$(plist_value CFBundleExecutable)" == "ASOP File Browser" ]] \
+[[ "$(plist_value CFBundleExecutable)" == "AOSP File Manager" ]] \
   || fail "Unexpected bundle executable."
-[[ "$(plist_value CFBundleName)" == "ASOP File Browser" ]] \
+[[ "$(plist_value CFBundleName)" == "AOSP File Manager" ]] \
   || fail "Unexpected bundle name."
 [[ "$(plist_value CFBundlePackageType)" == "APPL" ]] \
   || fail "Unexpected bundle package type."
@@ -130,7 +130,7 @@ plist_value() {
   || fail "The app must keep macOS 13.0 as its minimum system version."
 [[ "$(plist_value LSMultipleInstancesProhibited)" == "true" ]] \
   || fail "The app must prohibit multiple running instances."
-[[ "$(plist_value NSMicrophoneUsageDescription)" == "ASOP File Browser records audio from your Mac's microphone when you include it in a screen recording." ]] \
+[[ "$(plist_value NSMicrophoneUsageDescription)" == "AOSP File Manager records audio from your Mac's microphone when you include it in a screen recording." ]] \
   || fail "The app must include its approved microphone usage description."
 
 if [[ -n "$EXPECTED_VERSION" ]]; then

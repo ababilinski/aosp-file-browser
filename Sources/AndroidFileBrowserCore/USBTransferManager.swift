@@ -243,7 +243,7 @@ public struct USBTransferAccessIssue: Equatable, Sendable {
     static func macOSCameraOwner(interface: USBInterfaceAccessSnapshot) -> USBTransferAccessIssue {
         return USBTransferAccessIssue(
             title: "File Transfer Is Busy",
-            message: "macOS is checking \(interface.displayName) for photos. ASOP File Browser can try the connection again.",
+            message: "macOS is checking \(interface.displayName) for photos. AOSP File Manager can try the connection again.",
             statusMessage: "File Transfer is busy. Try the connection again.",
             actionTitle: "Try Again",
             recoveryAction: .releaseMacOSCameraService
@@ -273,7 +273,7 @@ public struct USBTransferAccessIssue: Equatable, Sendable {
     static func mtpConnectionLost(error: Error) -> USBTransferAccessIssue {
         USBTransferAccessIssue(
             title: "File Transfer Disconnected",
-            message: "The phone stopped responding during File Transfer. ASOP File Browser can reset the USB connection and reconnect without switching to read-only photo access. \(error.friendlyMessage)",
+            message: "The phone stopped responding during File Transfer. AOSP File Manager can reset the USB connection and reconnect without switching to read-only photo access. \(error.friendlyMessage)",
             statusMessage: "File Transfer disconnected. Reconnecting…",
             actionTitle: "Reconnect",
             recoveryAction: .resetMTPConnection
@@ -3664,7 +3664,7 @@ public final class USBTransferManager: NSObject, ObservableObject, @unchecked Se
                 } else {
                     let issue = USBTransferAccessIssue(
                         title: "File Transfer Couldn't Reconnect",
-                        message: "Keep the phone unlocked with File transfer / Android Auto selected, then reconnect. ASOP File Browser will keep this as a File Transfer connection instead of switching to read-only photo access.",
+                        message: "Keep the phone unlocked with File transfer / Android Auto selected, then reconnect. AOSP File Manager will keep this as a File Transfer connection instead of switching to read-only photo access.",
                         statusMessage: "File Transfer couldn't reconnect. Keep the phone unlocked and try again.",
                         actionTitle: "Reconnect",
                         recoveryAction: .resetMTPConnection

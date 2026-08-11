@@ -14,14 +14,14 @@ final class PhoneControlTests: XCTestCase {
 
         let arguments = ADBClient.scrcpyArguments(
             serial: "device-serial",
-            windowTitle: "ASOP File Browser — Device [e-serial]",
+            windowTitle: "AOSP File Manager — Device [e-serial]",
             options: options,
             placement: placement
         )
 
         XCTAssertEqual(Array(arguments.prefix(4)), [
             "--serial", "device-serial",
-            "--window-title", "ASOP File Browser — Device [e-serial]"
+            "--window-title", "AOSP File Manager — Device [e-serial]"
         ])
         XCTAssertTrue(arguments.contains("--no-power-on"))
         XCTAssertTrue(arguments.contains("--show-touches"))

@@ -1,6 +1,6 @@
 # License files
 
-- `MTPKit-LICENSE.txt` accompanies MTPKit 0.1.4, which is compiled into ASOP File Browser.
+- `MTPKit-LICENSE.txt` accompanies MTPKit 0.1.4, which is compiled into AOSP File Manager.
 - `Apache-2.0.txt` is the license used by the open-source ADB code.
 - `Android-SDK-Platform-Tools-37.0.0-NOTICE.txt` is the complete matching notice from Google’s Platform-Tools 37.0.0 package.
 - `scrcpy-4.1-LICENSE.txt` is the exact license published for scrcpy 4.1.

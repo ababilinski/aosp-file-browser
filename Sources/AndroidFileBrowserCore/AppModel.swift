@@ -6130,7 +6130,7 @@ public final class AppModel: ObservableObject {
             if conflict.kind == .newerVersionInstalled, options.allowDowngrade {
                 alert = UserAlert(
                     title: "Downgrade Not Allowed",
-                    message: "Android still refused this older version. Many release apps and newer Android versions cannot be downgraded without removing the installed copy first. To protect app data, ASOP File Browser did not remove it."
+                    message: "Android still refused this older version. Many release apps and newer Android versions cannot be downgraded without removing the installed copy first. To protect app data, AOSP File Manager did not remove it."
                 )
                 statusMessage = "Android did not allow the downgrade."
             } else if conflict.kind == .differentSignature, conflict.packageName == nil {
@@ -7412,7 +7412,7 @@ public final class AppModel: ObservableObject {
 
     private func phoneControlWindowTitle(deviceTitle: String, serial: String) -> String {
         let serialSuffix = serial.count > 8 ? String(serial.suffix(8)) : serial
-        return "ASOP File Browser — \(deviceTitle) [\(serialSuffix)]"
+        return "AOSP File Manager — \(deviceTitle) [\(serialSuffix)]"
     }
 
     private nonisolated static func isProcessAlive(_ processIdentifier: Int32) -> Bool {
@@ -9029,7 +9029,7 @@ public final class AppModel: ObservableObject {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = count == 1 ? "Move the original item to Trash?" : "Move the original \(count) items to Trash?"
-        alert.informativeText = "The copy to the other Android device completed. To finish the cut operation, ASOP File Browser can move the source item\(count == 1 ? "" : "s") into its app-managed Trash on the original device."
+        alert.informativeText = "The copy to the other Android device completed. To finish the cut operation, AOSP File Manager can move the source item\(count == 1 ? "" : "s") into its app-managed Trash on the original device."
         alert.addButton(withTitle: "Move to Trash")
         alert.addButton(withTitle: "Keep Originals")
         return alert.runModal() == .alertFirstButtonReturn

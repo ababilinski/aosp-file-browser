@@ -1,6 +1,6 @@
 # ADB and scrcpy
 
-ASOP File Browser can use tools already installed on your Mac. If one is missing, open **Settings → Tools**, choose **Managed Copy** for that tool, then choose **Download**. The app never downloads or updates tools in the background.
+AOSP File Manager can use tools already installed on your Mac. If one is missing, open **Settings → Tools**, choose **Managed Copy** for that tool, then choose **Download**. The app never downloads or updates tools in the background.
 
 File Transfer Mode does not need ADB or scrcpy. Debugging features use ADB. Phone Control also uses scrcpy.
 
@@ -42,7 +42,7 @@ The Homebrew installation uses ADB from your system. Official standalone builds 
 Open **Settings → Tools**.
 
 - **Automatic** prefers a verified app-managed copy, then checks Android Studio and Unity SDK locations, Homebrew, your `PATH`, and a bundled copy when a distributor has provided one correctly.
-- **Managed Copy** uses the verified copy downloaded by ASOP File Browser. If it is not present, choose **Download** beside the tool.
+- **Managed Copy** uses the verified copy downloaded by AOSP File Manager. If it is not present, choose **Download** beside the tool.
 - **Choose…** selects a specific executable.
 - **Bundled Copy** appears only when a distributor supplied that tool inside the app.
 

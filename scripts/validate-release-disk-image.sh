@@ -150,9 +150,9 @@ trap cleanup EXIT
   "$DISK_IMAGE_PATH" >/dev/null
 ATTACHED=true
 
-APP_PATH="$MOUNT_POINT/ASOP File Browser.app"
+APP_PATH="$MOUNT_POINT/AOSP File Manager.app"
 VOLUME_ICON_PATH="$MOUNT_POINT/.VolumeIcon.icns"
-[[ -d "$APP_PATH" ]] || fail "The disk image does not contain ASOP File Browser.app."
+[[ -d "$APP_PATH" ]] || fail "The disk image does not contain AOSP File Manager.app."
 [[ -L "$MOUNT_POINT/Applications" ]] \
   || fail "The disk image does not contain an Applications shortcut."
 [[ "$(/usr/bin/readlink "$MOUNT_POINT/Applications")" == "/Applications" ]] \

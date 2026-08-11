@@ -673,15 +673,25 @@ private enum PreviewCacheError: LocalizedError {
 }
 
 private enum PreviewCacheKeychain {
-    private static let service = "com.adrianbabilinski.ASOPFileBrowser.preview-cache"
+    private static let service = "com.adrianbabilinski.AOSPFileManager.preview-cache"
+    // Preserve access to preview caches encrypted before the product rename.
+    private static let legacyService = "com.adrianbabilinski.ASOPFileBrowser.preview-cache"
     private static let account = "preview-cache-key-v1"
 
     static func loadOrCreateKey() -> Data? {
-        let firstLoad = loadKey()
+        let firstLoad = loadKey(service: service)
         if firstLoad.status == errSecSuccess,
            let existing = firstLoad.data,
            existing.count == 32 {
             return existing
+        }
+        let legacyLoad = loadKey(service: legacyService)
+        if firstLoad.status == errSecItemNotFound,
+           legacyLoad.status == errSecSuccess,
+           let legacy = legacyLoad.data,
+           legacy.count == 32 {
+            storeKey(legacy)
+            return legacy
         }
         guard firstLoad.status == errSecItemNotFound else { return nil }
 
@@ -691,6 +701,15 @@ private enum PreviewCacheKeychain {
         }
         guard status == errSecSuccess else { return nil }
 
+        if storeKey(key) == errSecSuccess {
+            return key
+        }
+        let secondLoad = loadKey(service: service)
+        return secondLoad.status == errSecSuccess ? secondLoad.data : nil
+    }
+
+    @discardableResult
+    private static func storeKey(_ key: Data) -> OSStatus {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -698,18 +717,10 @@ private enum PreviewCacheKeychain {
             kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecValueData: key
         ]
-        let addStatus = SecItemAdd(query as CFDictionary, nil)
-        if addStatus == errSecSuccess {
-            return key
-        }
-        if addStatus == errSecDuplicateItem {
-            let secondLoad = loadKey()
-            return secondLoad.status == errSecSuccess ? secondLoad.data : nil
-        }
-        return nil
+        return SecItemAdd(query as CFDictionary, nil)
     }
 
-    private static func loadKey() -> (status: OSStatus, data: Data?) {
+    private static func loadKey(service: String) -> (status: OSStatus, data: Data?) {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,

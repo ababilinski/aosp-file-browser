@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-ASOP File Browser is licensed under the GNU General Public License version 3. This file identifies separate software that is compiled into the app or can be used with optional features.
+AOSP File Manager is licensed under the GNU General Public License version 3. This file identifies separate software that is compiled into the app or can be used with optional features.
 
 ## Included in the application
 
@@ -17,7 +17,7 @@ The complete license is in [`ThirdPartyLicenses/MTPKit-LICENSE.txt`](ThirdPartyL
 
 ## Tools used by optional features
 
-The default app bundle does not include ADB or scrcpy. ASOP File Browser can find compatible installations already on the Mac. With the user's approval, it can also download the official scrcpy 4.1 macOS archive directly into Application Support. The archive checksum is verified before extraction. See [`TOOLS.md`](TOOLS.md) for details and manual installation choices.
+The default app bundle does not include ADB or scrcpy. AOSP File Manager can find compatible installations already on the Mac. With the user's approval, it can also download the official scrcpy 4.1 macOS archive directly into Application Support. The archive checksum is verified before extraction. See [`TOOLS.md`](TOOLS.md) for details and manual installation choices.
 
 ### Android Debug Bridge (ADB)
 
@@ -58,7 +58,7 @@ Apple frameworks and standard macOS tools are supplied by macOS and are not redi
 
 ## Trademarks
 
-Android is a trademark of Google LLC. ADB, scrcpy, MTPKit, Google, and other names belong to their respective owners and are used only to identify compatibility. ASOP File Browser is not affiliated with or endorsed by those projects or owners.
+Android is a trademark of Google LLC. ADB, scrcpy, MTPKit, Google, and other names belong to their respective owners and are used only to identify compatibility. AOSP File Manager is not affiliated with or endorsed by those projects or owners.
 
 ## Android robot
 

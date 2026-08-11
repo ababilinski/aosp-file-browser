@@ -272,7 +272,7 @@ private struct FileDetailCard: View {
                     } label: {
                         Label("Trash", systemImage: "trash")
                     }
-                    .help("Move this file to ASOP File Browser Trash.")
+                    .help("Move this file to AOSP File Manager Trash.")
                 }
             }
             .inspectorActionBar()

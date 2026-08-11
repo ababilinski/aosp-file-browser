@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to ASOP File Browser are recorded here. The format is inspired
+Notable changes to AOSP File Manager are recorded here. The format is inspired
 by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 

@@ -210,14 +210,14 @@ jobs:
           APP_VERSION="0.0.${GITHUB_RUN_NUMBER}" \
           APP_BUILD="${GITHUB_RUN_NUMBER}" \
           APP_ARCHITECTURE="universal" \
-          APP_BUNDLE_OUTPUT_PATH=".build/release-universal/ASOP File Browser.app" \
+          APP_BUNDLE_OUTPUT_PATH=".build/release-universal/AOSP File Manager.app" \
           CODE_SIGN_IDENTITY="-" \
           ./scripts/package-app.sh
 
       - name: Create and verify the universal disk image
         run: |
           ./scripts/create-release-disk-image.sh \
-            ".build/release-universal/ASOP File Browser.app" \
+            ".build/release-universal/AOSP File Manager.app" \
             "dist" \
             "0.0.${GITHUB_RUN_NUMBER}" \
             --version "0.0.${GITHUB_RUN_NUMBER}" \
@@ -228,10 +228,10 @@ jobs:
       - name: Upload release candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ASOP-File-Browser-candidate-${{ github.sha }}
+          name: AOSP-File-Manager-candidate-${{ github.sha }}
           path: |
-            dist/ASOP-File-Browser-0.0.${{ github.run_number }}-macOS.dmg
-            dist/ASOP-File-Browser-0.0.${{ github.run_number }}-macOS.dmg.sha256
+            dist/AOSP-File-Manager-0.0.${{ github.run_number }}-macOS.dmg
+            dist/AOSP-File-Manager-0.0.${{ github.run_number }}-macOS.dmg.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -263,12 +263,12 @@ jobs:
       - name: Download the exact release candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ASOP-File-Browser-candidate-${{ github.sha }}
+          name: AOSP-File-Manager-candidate-${{ github.sha }}
           path: dist
 
       - name: Verify and open the universal app
         run: |
-          disk_image="dist/ASOP-File-Browser-0.0.${GITHUB_RUN_NUMBER}-macOS.dmg"
+          disk_image="dist/AOSP-File-Manager-0.0.${GITHUB_RUN_NUMBER}-macOS.dmg"
           (
             cd dist
             shasum -a 256 -c "$(basename "$disk_image").sha256"

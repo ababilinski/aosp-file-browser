@@ -164,7 +164,7 @@ Create and validate an ad-hoc signed candidate:
 ```sh
 APP_VERSION=0.3.0 APP_BUILD=3 ./scripts/package-app.sh
 ./scripts/create-release-disk-image.sh \
-  ".build/release/ASOP File Browser.app" \
+  ".build/release/AOSP File Manager.app" \
   dist \
   0.3.0 \
   --version 0.3.0 \

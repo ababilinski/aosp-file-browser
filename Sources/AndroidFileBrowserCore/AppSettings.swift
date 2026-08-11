@@ -791,7 +791,7 @@ public struct SettingsView: View {
 
             SettingsCacheActionRow(
                 title: "All cache",
-                detail: "Clear every temporary file created by ASOP File Browser.",
+                detail: "Clear every temporary file created by AOSP File Manager.",
                 symbol: "trash",
                 bytes: model.cacheUsage.totalBytes,
                 buttonTitle: "Clear All",
@@ -1509,7 +1509,7 @@ private struct ToolSelectionRow: View {
             "Uses the managed copy first, then compatible tools already installed on this Mac."
         case .managed:
             manager.hasManagedTools
-                ? "Uses the verified copy managed by ASOP File Browser."
+                ? "Uses the verified copy managed by AOSP File Manager."
                 : "Download a managed copy to use this option."
         case .custom:
             customPath.isEmpty ? "Choose a specific \(tool.executableName) executable." : customPath

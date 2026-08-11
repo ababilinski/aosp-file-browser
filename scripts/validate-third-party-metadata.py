@@ -240,7 +240,7 @@ def main() -> int:
         if copyright_line not in content:
             errors.append(f"{relative_path} is missing the canonical copyright line")
 
-    brand_markup = '<a class="brand" href="../" aria-label="ASOP File Browser overview">'
+    brand_markup = '<a class="brand" href="../" aria-label="AOSP File Manager overview">'
     for relative_path, title in OFF_HOME_PAGES.items():
         content = load_text(relative_path, errors)
         header = re.search(r"<header\b.*?</header>", content, re.DOTALL)

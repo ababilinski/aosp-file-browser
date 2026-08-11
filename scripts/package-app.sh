@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="ASOP File Browser"
+APP_NAME="AOSP File Manager"
 VERSION_FILE="$ROOT/VERSION"
 if [[ ! -f "$VERSION_FILE" ]]; then
   echo "Missing version file: $VERSION_FILE" >&2
@@ -220,7 +220,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © 2026 Adrian Babilinski</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>ASOP File Browser records audio from your Mac's microphone when you include it in a screen recording.</string>
+  <string>AOSP File Manager records audio from your Mac's microphone when you include it in a screen recording.</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key>

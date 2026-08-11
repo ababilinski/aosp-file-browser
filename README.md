@@ -1,22 +1,22 @@
-![File Browser for Android](docs/assets/Banner.png)
+![AOSP File Manager, an Android file browser for Mac](docs/assets/Banner.png)
 
-# ASOP File Browser
+# AOSP File Manager
 
-Browse, preview, and move files between your Android phone and Mac.
+AOSP File Manager is a free Android file browser for Mac. Browse, preview, and move files between your Android phone and Mac.
 
 Requires macOS 13 Ventura or later.
 
 ## Screenshots
 
-<img width="817" height="490" alt="ASOP File Browser showing Android storage in a Finder-style browser" src="https://github.com/user-attachments/assets/c1704ea3-9072-494f-af41-a565b4461f28" />
+![AOSP File Manager showing Android storage in a Finder-style browser](docs/assets/file-browser.png)
 
 **View and edit your Android storage just like in Finder.**
 
-<img width="817" height="490" alt="ASOP File Browser detailed Android storage view" src="https://github.com/user-attachments/assets/7acf4558-19f0-47c6-9711-efd51f987ca7" />
+![AOSP File Manager detailed Android storage view](docs/assets/storage-overview.png)
 
 **See what is taking up space using the detailed storage screen.**
 
-<img width="817" height="490" alt="ASOP File Browser app manager" src="https://github.com/user-attachments/assets/c9ca4109-259f-41ff-9dba-e73b81143d72" />
+![AOSP File Manager app manager](docs/assets/app-manager.png)
 
 **Install and download apps using the app manager.**
 
@@ -48,15 +48,15 @@ USB or Wi-Fi debugging also adds Search Everywhere, Trash, detailed storage view
 
 ## Drag and drop
 
-Drag files between ASOP File Browser and Finder.
+Drag files between AOSP File Manager and Finder.
 
-![Files dragged in both directions between ASOP File Browser and Finder](docs/assets/drag-and-drop.png)
+![Files dragged in both directions between AOSP File Manager and Finder](docs/assets/drag-and-drop.png)
 
 ## Transfers
 
 See progress, cancel a transfer, or retry one that failed.
 
-![Transfer progress in ASOP File Browser](docs/assets/transfers.png)
+![Transfer progress in AOSP File Manager](docs/assets/transfers.png)
 
 ## Connections
 
@@ -94,7 +94,7 @@ With Developer Options and USB or Wi-Fi debugging, you can:
 
 ### Browse files
 
-![ASOP File Browser showing a selected photo](docs/assets/browse-photo.png)
+![AOSP File Manager showing a selected photo](docs/assets/browse-photo.png)
 
 ### Preview files
 
