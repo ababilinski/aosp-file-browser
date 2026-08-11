@@ -67,6 +67,7 @@ public final class AppSettings: ObservableObject {
         static let showRecordingSetup = "settings.showRecordingSetup"
         static let showPhoneControlSetup = "settings.showPhoneControlSetup"
         static let phoneControlDeviceOptions = "settings.phoneControlDeviceOptions"
+        static let bundleIdentityMigrationCompleted = "settings.bundleIdentityMigrationCompleted"
     }
 
     private let defaults: UserDefaults
@@ -248,6 +249,12 @@ public final class AppSettings: ObservableObject {
     }
 
     public init(defaults: UserDefaults = .standard) {
+        if defaults === UserDefaults.standard {
+            Self.migrateLegacyBundleDefaults(
+                defaults.persistentDomain(forName: AOSPAppIdentity.legacyBundleIdentifier) ?? [:],
+                into: defaults
+            )
+        }
         self.defaults = defaults
         self.appearanceMode = AppAppearanceMode(rawValue: defaults.string(forKey: Key.appearanceMode) ?? "") ?? .system
         self.contentBackgroundStyle = AppContentBackgroundStyle(
@@ -324,6 +331,17 @@ public final class AppSettings: ObservableObject {
             self.customQuickLocations = []
         }
         defaults.set(!edgeToEdgeSidebar, forKey: Key.sidebarDefaultsToFloatingAppearance)
+    }
+
+    static func migrateLegacyBundleDefaults(
+        _ legacyValues: [String: Any],
+        into defaults: UserDefaults
+    ) {
+        guard !defaults.bool(forKey: Key.bundleIdentityMigrationCompleted) else { return }
+        for (key, value) in legacyValues where defaults.object(forKey: key) == nil {
+            defaults.set(value, forKey: key)
+        }
+        defaults.set(true, forKey: Key.bundleIdentityMigrationCompleted)
     }
 
     public func reset() {

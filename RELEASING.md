@@ -9,6 +9,22 @@ Apple silicon and Intel runners.
 
 Pull-request builds are ad-hoc signed and never receive Apple credentials.
 
+## Release identity
+
+Release artifacts use the following Apple identity. Keep these values aligned
+with App Store Connect before signing a release:
+
+| Field | Value |
+| --- | --- |
+| App name in macOS | AOSP File Manager |
+| App Store Connect name | AOSP File Browser |
+| Bundle identifier | `com.ababilinski.aospfilebrowser` |
+| Apple ID | `6800194255` |
+
+The App Store listing name is separate from the name shown by the installed
+app. Packaging and validation share the app name and bundle identifier from
+[`scripts/app-identity.sh`](scripts/app-identity.sh).
+
 ## Choose the release impact
 
 Every change pull request should have one release label:

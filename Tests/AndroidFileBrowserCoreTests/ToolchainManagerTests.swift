@@ -3,6 +3,53 @@ import XCTest
 @testable import AndroidFileBrowserCore
 
 final class ToolchainManagerTests: XCTestCase {
+    func testManagedToolsMoveToTheAOSPBundleDirectory() throws {
+        let applicationSupport = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: applicationSupport) }
+
+        let legacyRoot = applicationSupport.appending(
+            path: AOSPAppIdentity.legacyBundleIdentifier,
+            directoryHint: .isDirectory
+        )
+        let legacyTools = legacyRoot.appending(path: "Tools", directoryHint: .isDirectory)
+        let sentinel = legacyTools.appending(path: "existing-tool")
+        try FileManager.default.createDirectory(at: legacyTools, withIntermediateDirectories: true)
+        try Data("keep me".utf8).write(to: sentinel)
+
+        let toolsRoot = ToolchainPaths.managedToolsRoot(
+            applicationSupportDirectory: applicationSupport
+        )
+
+        XCTAssertEqual(
+            toolsRoot,
+            applicationSupport
+                .appending(path: AOSPAppIdentity.bundleIdentifier, directoryHint: .isDirectory)
+                .appending(path: "Tools", directoryHint: .isDirectory)
+        )
+        XCTAssertEqual(try Data(contentsOf: toolsRoot.appending(path: "existing-tool")), Data("keep me".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyRoot.path))
+    }
+
+    func testManagedToolsKeepUsingTheLegacyDirectoryWhenMigrationFails() throws {
+        let applicationSupport = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: applicationSupport) }
+
+        let legacyRoot = applicationSupport.appending(
+            path: AOSPAppIdentity.legacyBundleIdentifier,
+            directoryHint: .isDirectory
+        )
+        let legacyTools = legacyRoot.appending(path: "Tools", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: legacyTools, withIntermediateDirectories: true)
+        let fileManager = FirstMoveFailingFileManager(blockedSourcePath: legacyRoot.path)
+
+        let toolsRoot = ToolchainPaths.managedToolsRoot(
+            fileManager: fileManager,
+            applicationSupportDirectory: applicationSupport
+        )
+
+        XCTAssertEqual(toolsRoot, legacyTools)
+    }
+
     @MainActor
     func testScrcpyVersionDropsTheProjectURL() {
         let output = "scrcpy 4.1 <https://github.com/Genymobile/scrcpy>\n"

@@ -4,6 +4,29 @@ import XCTest
 
 @MainActor
 final class AppSettingsTests: XCTestCase {
+    func testBundleIdentityMigrationPreservesExistingSettingsAndRunsOnce() {
+        let defaults = makeDefaults()
+        defaults.set("current", forKey: "existing-setting")
+
+        AppSettings.migrateLegacyBundleDefaults(
+            [
+                "existing-setting": "legacy",
+                "migrated-setting": "copied"
+            ],
+            into: defaults
+        )
+
+        XCTAssertEqual(defaults.string(forKey: "existing-setting"), "current")
+        XCTAssertEqual(defaults.string(forKey: "migrated-setting"), "copied")
+
+        defaults.set("changed after migration", forKey: "migrated-setting")
+        AppSettings.migrateLegacyBundleDefaults(
+            ["migrated-setting": "legacy again"],
+            into: defaults
+        )
+        XCTAssertEqual(defaults.string(forKey: "migrated-setting"), "changed after migration")
+    }
+
     func testConnectionModeLaunchCheckDefaultsOn() {
         let defaults = makeDefaults()
         let settings = AppSettings(defaults: defaults)

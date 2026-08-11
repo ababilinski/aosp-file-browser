@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="AOSP File Manager"
+source "$ROOT/scripts/app-identity.sh"
+APP_NAME="$AOSP_APP_NAME"
+BUNDLE_ID="$AOSP_BUNDLE_ID"
 VERSION_FILE="$ROOT/VERSION"
 if [[ ! -f "$VERSION_FILE" ]]; then
   echo "Missing version file: $VERSION_FILE" >&2
@@ -198,10 +200,12 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleExecutable</key>
   <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>
-  <string>com.ababilinski.android-file-browser</string>
+  <string>$BUNDLE_ID</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
+  <string>$APP_NAME</string>
+  <key>CFBundleDisplayName</key>
   <string>$APP_NAME</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
