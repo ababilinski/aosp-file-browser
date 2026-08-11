@@ -13,6 +13,7 @@ on:
       - reopened
       - labeled
       - unlabeled
+      - ready_for_review
   merge_group:
     types:
       - checks_requested
@@ -204,38 +205,25 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_*.py'
           python3 scripts/validate-third-party-metadata.py
 
-      - name: Build universal and native app bundles
+      - name: Build the universal app bundle
         run: |
-          while IFS='|' read -r architecture directory; do
-            APP_VERSION="0.0.${GITHUB_RUN_NUMBER}" \
-            APP_BUILD="${GITHUB_RUN_NUMBER}" \
-            APP_ARCHITECTURE="$architecture" \
-            APP_BUNDLE_OUTPUT_PATH=".build/$directory/ASOP File Browser.app" \
-            CODE_SIGN_IDENTITY="-" \
-            ./scripts/package-app.sh
-          done <<'VARIANTS'
-          universal|release-universal
-          arm64|release-arm64
-          x86_64|release-x86_64
-          VARIANTS
+          APP_VERSION="0.0.${GITHUB_RUN_NUMBER}" \
+          APP_BUILD="${GITHUB_RUN_NUMBER}" \
+          APP_ARCHITECTURE="universal" \
+          APP_BUNDLE_OUTPUT_PATH=".build/release-universal/ASOP File Browser.app" \
+          CODE_SIGN_IDENTITY="-" \
+          ./scripts/package-app.sh
 
-      - name: Create and verify the downloadable disk images
+      - name: Create and verify the universal disk image
         run: |
-          while IFS='|' read -r architecture directory suffix; do
-            RELEASE_ARTIFACT_SUFFIX="$suffix" \
-            ./scripts/create-release-disk-image.sh \
-              ".build/$directory/ASOP File Browser.app" \
-              "dist" \
-              "0.0.${GITHUB_RUN_NUMBER}" \
-              --version "0.0.${GITHUB_RUN_NUMBER}" \
-              --build "${GITHUB_RUN_NUMBER}" \
-              --architecture "$architecture" \
-              --require-no-bundled-tools
-          done <<'VARIANTS'
-          universal|release-universal|
-          arm64|release-arm64|Apple-Silicon
-          x86_64|release-x86_64|Intel
-          VARIANTS
+          ./scripts/create-release-disk-image.sh \
+            ".build/release-universal/ASOP File Browser.app" \
+            "dist" \
+            "0.0.${GITHUB_RUN_NUMBER}" \
+            --version "0.0.${GITHUB_RUN_NUMBER}" \
+            --build "${GITHUB_RUN_NUMBER}" \
+            --architecture universal \
+            --require-no-bundled-tools
 
       - name: Upload release candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -244,10 +232,6 @@ jobs:
           path: |
             dist/ASOP-File-Browser-0.0.${{ github.run_number }}-macOS.dmg
             dist/ASOP-File-Browser-0.0.${{ github.run_number }}-macOS.dmg.sha256
-            dist/ASOP-File-Browser-0.0.${{ github.run_number }}-macOS-Apple-Silicon.dmg
-            dist/ASOP-File-Browser-0.0.${{ github.run_number }}-macOS-Apple-Silicon.dmg.sha256
-            dist/ASOP-File-Browser-0.0.${{ github.run_number }}-macOS-Intel.dmg
-            dist/ASOP-File-Browser-0.0.${{ github.run_number }}-macOS-Intel.dmg.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -264,16 +248,10 @@ jobs:
         include:
           - name: Apple silicon
             runner: macos-15
-            architecture: arm64
-            suffix: Apple-Silicon
           - name: macOS 14 compatibility
             runner: macos-14
-            architecture: arm64
-            suffix: Apple-Silicon
           - name: Intel
             runner: macos-15-intel
-            architecture: x86_64
-            suffix: Intel
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
@@ -288,29 +266,20 @@ jobs:
           name: ASOP-File-Browser-candidate-${{ github.sha }}
           path: dist
 
-      - name: Verify and open the universal and native apps
-        env:
-          NATIVE_ARCHITECTURE: ${{ matrix.architecture }}
-          NATIVE_SUFFIX: ${{ matrix.suffix }}
+      - name: Verify and open the universal app
         run: |
-          while IFS='|' read -r architecture suffix; do
-            file_suffix="${suffix:+-$suffix}"
-            disk_image="dist/ASOP-File-Browser-0.0.${GITHUB_RUN_NUMBER}-macOS$file_suffix.dmg"
-            (
-              cd dist
-              shasum -a 256 -c "$(basename "$disk_image").sha256"
-            )
-            ./scripts/validate-release-disk-image.sh \
-              "$disk_image" \
-              --version "0.0.${GITHUB_RUN_NUMBER}" \
-              --build "${GITHUB_RUN_NUMBER}" \
-              --architecture "$architecture" \
-              --require-no-bundled-tools \
-              --launch-app
-          done <<VARIANTS
-          universal|
-          $NATIVE_ARCHITECTURE|$NATIVE_SUFFIX
-          VARIANTS
+          disk_image="dist/ASOP-File-Browser-0.0.${GITHUB_RUN_NUMBER}-macOS.dmg"
+          (
+            cd dist
+            shasum -a 256 -c "$(basename "$disk_image").sha256"
+          )
+          ./scripts/validate-release-disk-image.sh \
+            "$disk_image" \
+            --version "0.0.${GITHUB_RUN_NUMBER}" \
+            --build "${GITHUB_RUN_NUMBER}" \
+            --architecture universal \
+            --require-no-bundled-tools \
+            --launch-app
 
   release-readiness:
     name: Release readiness
